@@ -1,6 +1,6 @@
 # Korolev 🚀
 
-**One chief designer for your AI coding crew.** Claude orchestrates, Codex Astra and Sol 5.6 argue about the spec, Codex Sol 6.2 does the heavy lifting, and a Telegram butler pings you only when a human really has to decide.
+**One chief designer for your AI coding crew.** Claude orchestrates, Codex Astra and Sol 5.6 argue about the spec, Codex Sol 6.2 does the heavy lifting, and a Telegram bot pings you only when a human really has to decide.
 
 > Tired of AI coding agents that drift, burn through your limits, report "all green" on tests that never ran, and leave a week of work sitting in `/tmp`? Same here. Korolev is the approach we switched to.
 
@@ -8,7 +8,7 @@
 
 ```
                  you (the owner)
-                  ▲  decisions only, via Telegram (Butler bot)
+                  ▲  decisions only, via Telegram (Korolev bot)
                   │
         ┌─────────┴──────────┐
         │  Claude: chief     │  plans packages, verifies, pushes, promotes, keeps state
@@ -23,7 +23,7 @@
 - **Claude is the orchestrator.** It writes the task for each work package, launches a worker, and goes to sleep. When the run ends, it reads a one-screen verification report, not the whole transcript. Then it pushes, promotes, or sends a fix.
 - **Astra and Sol 5.6 are the consultants.** Every new spec gets two independent reviews at extra-high reasoning. They disagree, Claude merges, and the spec gets better before any code exists.
 - **Sol 6.2 is the builder.** Each package runs in a brand-new session that gets a short task and a one-page state file instead of a 200k-token history, so it's sharp and cheap.
-- **Butler is the polite one.** When something truly needs you, such as a price, a limit or a product rule, you get one batched Telegram message with options and a recommended default. Everything else keeps moving.
+- **The Korolev bot is the polite one.** When something truly needs you, such as a price, a limit or a product rule, you get one batched Telegram message with options and a recommended default. Everything else keeps moving.
 
 ## Why: lessons paid for in real money
 
