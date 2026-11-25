@@ -112,18 +112,18 @@ class TelegramTests(Sandbox):
 
 class LessonTests(Sandbox):
     def test_add_list_resolve_lifecycle(self):
-        lid = self.run_script('lesson.py', 'add', '--title', 'T', '--detail', 'D', '--proposal', 'P').stdout.strip()
+        lid = self.run_script('lesson.py', 'add', '--title', 'T', '--change', 'C', '--detail', 'D', '--proposal', 'P').stdout.strip()
         self.assertRegex(lid, r'^L-\d{8}-1$')
         self.assertIn('pending', self.run_script('lesson.py', 'list').stdout)
         self.run_script('lesson.py', 'resolve', lid, 'approved')
         self.assertIn('approved', self.run_script('lesson.py', 'list', '--status', 'approved').stdout)
-        direct = self.run_script('lesson.py', 'add', '--title', 'X', '--detail', 'D', '--proposal', 'P',
+        direct = self.run_script('lesson.py', 'add', '--title', 'X', '--change', 'C', '--detail', 'D', '--proposal', 'P',
                                  '--status', 'applied').stdout.strip()
         self.assertTrue(direct.endswith('-2'))
         self.assertIn(direct, self.run_script('lesson.py', 'list', '--status', 'applied').stdout)
 
     def test_propose_without_telegram_fails_cleanly_and_keeps_pending(self):
-        self.run_script('lesson.py', 'add', '--title', 'T', '--detail', 'D', '--proposal', 'P')
+        self.run_script('lesson.py', 'add', '--title', 'T', '--change', 'C', '--detail', 'D', '--proposal', 'P')
         result = self.run_script('lesson.py', 'propose', check=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('pending', self.run_script('lesson.py', 'list').stdout)
