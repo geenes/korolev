@@ -1,6 +1,6 @@
 ---
 name: korolev
-description: Orchestrate software development as a chief designer. Onboard a new project from a repo link or path (analyze code and specs, build or correct an implementation plan, get second and third opinions from Codex Astra xhigh and Sol 5.6 xhigh, ask the owner product questions on Telegram). Then run the build loop, handing all hard work to Codex Sol. Use when the user says "korolev", gives a repo to onboard or plan, or asks to coordinate Codex/Kilo developers cheaply with verification and Telegram questions.
+description: Orchestrate software development as a chief designer, and improve itself from its own mistakes. Onboard a new project from a repo link or path (analyze code and specs, build or correct an implementation plan, get second and third opinions from Codex Astra xhigh and Sol 5.6 xhigh, ask the owner product questions on Telegram). Then run the build loop, handing all hard work to Codex Sol. Use when the user says "korolev", gives a repo to onboard or plan, or asks to coordinate Codex/Kilo developers cheaply with verification and Telegram questions.
 ---
 
 # Korolev: chief designer
@@ -95,6 +95,35 @@ Do one package at a time. For each package `NN-slug`:
    - **Reject:** write a fix `TASK.md`.
 6. **Promote:** fast-forward main only after the full test suite has passed on that exact commit, and only if allowed. Linked repos (one calls the other) are promoted only as a pair that was tested together.
 7. **The next slice:** after a big slice, write the next spec or plan for whatever is uncovered, run the opinions again, and ask the owner whatever is new.
+
+## Phase 3: learn and improve Korolev itself
+
+Korolev is a product too (`korolev`, the repo `geenes/korolev`). It improves through the same loop, with the owner approving.
+
+1. **Record a lesson** whenever something cost time, tokens or correctness:
+   - a check passed but proved nothing;
+   - a wrong assumption;
+   - the owner corrected you;
+   - a CLI or tool behaved differently than expected;
+   - a reviewer caught what you missed;
+   - you repeated a manual step that a script should do.
+
+   Record it right away, not at the end:
+
+   `python3 -I $SKILL/scripts/lesson.py add --kind mistake|improvement|tooling|cost --title "…" --detail "…" --proposal "…" [--project <name>] [--safety]`
+
+   Keep lessons **generic**: the pattern and the fix. No customer data, secrets or private project details. A proposal must be **concrete**: which file changes (SKILL.md, a script, a template, a prompt) and how. Prefer turning a lesson into an **enforced check** in a script over adding prose.
+2. **Propose** at the end of a milestone, or when 3 or more lessons are pending:
+
+   `python3 -I $SKILL/scripts/lesson.py propose`
+
+   This sends numbered proposals to the owner under "Korolev". Answers arrive in the inbox under project `korolev`. Record each answer with `lesson.py resolve <id> approved|rejected`.
+3. **Apply approved lessons** in Korolev's own clone (`onboard.py init https://github.com/geenes/korolev --name korolev`, once). Use the normal build loop: TASK, then builder, then verify. Run the tests (`python3 -m unittest discover -s tests`) and push to `main` when CI is green (Korolev's own main is pre-approved for approved lessons). Then mark the lesson `applied`.
+4. **Hard limits:**
+   - Changes to the golden rules, authority, secrets handling or Telegram reading (`--safety`) are never applied without the owner's explicit "a".
+   - Never weaken a check to make a lesson pass.
+   - One lesson per package, so each can be reverted alone.
+   - If the owner asks for a change directly in chat, record it with `--status applied` and implement it the same way.
 
 ## Templates and prompts
 

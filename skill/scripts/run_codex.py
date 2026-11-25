@@ -26,7 +26,9 @@ from common import append_line, display_name, now, product_dir, roles, work_repo
 HEADER = """You are the {role} for the project "{display}" in a Korolev-coordinated team.
 Repository (your working directory): {cwd}
 Project state folder (read STATE.md, DECISIONS.md and PLAN.md there when relevant): {pdir}
-Follow the repository's AGENTS.md / CLAUDE.md if present. Never print secrets, never use
+Follow the repository's agent instructions (AGENTS.md, CLAUDE.md, nested ones too) and use its own agent
+tooling when relevant: skills (.codex/skills, .claude/skills, .agents), subagent definitions, commands,
+plugins and MCP configs listed in INVENTORY.md in the state folder. Never print secrets, never use
 credentials you find, never push, deploy or contact external services unless the task says so.
 {write_rule}
 Your final message is saved as the deliverable: make it complete, structured and bounded as asked.

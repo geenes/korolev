@@ -110,6 +110,38 @@ class TelegramTests(Sandbox):
         self.assertIn('not configured', result.stderr)
 
 
+class LessonTests(Sandbox):
+    def test_add_list_resolve_lifecycle(self):
+        lid = self.run_script('lesson.py', 'add', '--title', 'T', '--detail', 'D', '--proposal', 'P').stdout.strip()
+        self.assertRegex(lid, r'^L-\d{8}-1$')
+        self.assertIn('pending', self.run_script('lesson.py', 'list').stdout)
+        self.run_script('lesson.py', 'resolve', lid, 'approved')
+        self.assertIn('approved', self.run_script('lesson.py', 'list', '--status', 'approved').stdout)
+        direct = self.run_script('lesson.py', 'add', '--title', 'X', '--detail', 'D', '--proposal', 'P',
+                                 '--status', 'applied').stdout.strip()
+        self.assertTrue(direct.endswith('-2'))
+        self.assertIn(direct, self.run_script('lesson.py', 'list', '--status', 'applied').stdout)
+
+    def test_propose_without_telegram_fails_cleanly_and_keeps_pending(self):
+        self.run_script('lesson.py', 'add', '--title', 'T', '--detail', 'D', '--proposal', 'P')
+        result = self.run_script('lesson.py', 'propose', check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('pending', self.run_script('lesson.py', 'list').stdout)
+
+    def test_inventory_lists_agent_tooling(self):
+        origin = self.base / 'eco'
+        (origin / '.claude' / 'skills' / 'x').mkdir(parents=True)
+        (origin / '.claude' / 'skills' / 'x' / 'SKILL.md').write_text('---\nname: x\n---\n')
+        (origin / '.mcp.json').write_text('{}')
+        subprocess.run(['git', 'init', '-q', '-b', 'main'], cwd=origin, check=True)
+        subprocess.run(['git', 'add', '.'], cwd=origin, check=True)
+        subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'i'], cwd=origin, check=True)
+        out = json.loads(self.run_script('onboard.py', 'init', str(origin), '--name', 'eco').stdout)
+        inv = Path(out['inventory']).read_text()
+        self.assertIn('Claude skills', inv)
+        self.assertIn('MCP servers', inv)
+
+
 class RoleTests(Sandbox):
     def test_config_overrides_roles(self):
         config = self.base / 'config'

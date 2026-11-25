@@ -22,6 +22,11 @@ from common import SKILL, display_name, now, product_dir, slug, work_repo, write
 SPEC_WORDS = re.compile(r'(spec|plan|roadmap|design|architect|adr|prd|requirement|todo|status|handoff|'
                         r'contributing|changelog|readme|agents|claude)', re.I)
 AGENT_FILES = ['AGENTS.md', 'CLAUDE.md', '.cursorrules', '.github/copilot-instructions.md', 'GEMINI.md']
+ECOSYSTEM = [  # (label, path prefix or file) for agent tooling the workers should respect and use
+    ('Claude skills', '.claude/skills/'), ('Claude subagents', '.claude/agents/'), ('Claude commands', '.claude/commands/'),
+    ('Claude settings/hooks', '.claude/settings'), ('Claude plugin', '.claude-plugin/'), ('Codex skills', '.codex/skills/'),
+    ('Codex config', '.codex/config'), ('Agent skills (.agents)', '.agents/'), ('MCP servers', '.mcp.json'),
+    ('Cursor rules', '.cursor/rules/'), ('Kilo/opencode config', '.kilo'), ('Gemini', '.gemini/')]
 TEXT_EXT = {'.py', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.go', '.rs', '.java', '.kt', '.rb', '.php',
             '.cs', '.cpp', '.c', '.h', '.swift', '.scala', '.sql', '.sh', '.vue', '.svelte', '.css', '.scss',
             '.html', '.md', '.yml', '.yaml', '.toml', '.json'}
@@ -136,6 +141,13 @@ def inventory(repo, name, source, how):
     present = [a for a in AGENT_FILES if (repo / a).exists()]
     present += [f for f in files if Path(f).name in names and f not in present][:20]
     out += [f'- `{a}` ({(repo / a).stat().st_size} bytes)' for a in present] or ['- none found']
+    out += ['', '## Agent tooling in the repo (workers must follow and use these)', '']
+    eco = []
+    for label, prefix in ECOSYSTEM:
+        hits = [f for f in files if f.startswith(prefix) or ('/' + prefix) in ('/' + f)]
+        if hits:
+            eco.append(f'- {label}: {len(hits)} file(s), e.g. ' + ', '.join(f'`{h}`' for h in hits[:4]))
+    out += eco or ['- none found']
     out += ['', '## Docs, specs and plans (read the authoritative ones; never everything)', '']
     for f in sorted(docs, key=lambda x: (x.count('/'), x))[:60]:
         out.append(f"- `{f}` ({(repo / f).stat().st_size} B) {first_heading(repo / f)}")
