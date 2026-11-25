@@ -91,9 +91,9 @@ Do one package at a time. For each package `NN-slug`:
    - prove tests ran with `python3 -I $SKILL/scripts/testcount.py check <report>` on captured pytest JUnit XML, pytest terminal output, or Node test output. Use `--base <base-report>` to reject a drop in collected tests or an increase in skips when a baseline report is available. Use JUnit XML when pytest's quiet output omits collection details.
 4. **Sensitive packages** (money, auth, security): run `opinions.py` with `templates/prompts/code-review.md` on the commit before accepting.
 5. **Accept or reject:**
-   - **Accept:** if push is delegated, push to the integration branch and verify the remote SHA. Update `STATE.md`.
+   - **Accept:** if push is delegated, push to the integration branch and verify the full remote SHA. Use that SHA for the hosted CI check before promotion. Update `STATE.md`.
    - **Reject:** write a fix `TASK.md`.
-6. **Promote:** fast-forward main only after the full test suite has passed on that exact commit, and only if allowed. Linked repos (one calls the other) are promoted only as a pair that was tested together.
+6. **Promote:** for hosted CI, run `python3 -I $SKILL/scripts/ci_wait.py <owner/repo> <full-sha>` before fast-forwarding main. Use `--workflow NAME` to select the full-suite workflow when several workflows run for the commit. Set `--min-tests N` to the expected minimum when CI emits a supported pytest or Node summary. Require exit 0 and a successful JSON verdict from `ci_wait.py` as the evidence for hosted CI. Fast-forward main only after the full test suite has passed on that exact commit, and only if allowed. Linked repos (one calls the other) are promoted only as a pair that was tested together.
 7. **The next slice:** after a big slice, write the next spec or plan for whatever is uncovered, run the opinions again, and ask the owner whatever is new.
 
 ## Phase 3: learn and improve Korolev itself
