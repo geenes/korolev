@@ -65,4 +65,4 @@ War stories welcome. If your agents ever lied about green tests, ate your token 
 
 ## License
 
-To be decided before the first public release.
+MIT. See [LICENSE](LICENSE).
