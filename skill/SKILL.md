@@ -133,7 +133,9 @@ Korolev is a product too (`korolev`, the repo `geenes/korolev`). It improves thr
 
    Record it right away, not at the end:
 
-   `python3 -I $SKILL/scripts/lesson.py add --kind mistake|improvement|tooling|cost --title "…" --detail "…" --proposal "…" [--project <name>] [--safety]`
+   `python3 -I $SKILL/scripts/lesson.py add --kind mistake|improvement|tooling|cost --title "…" --change "…" --detail "…" --proposal "…" [--project <name>] [--safety]`
+
+   Use `--change` for a short feature title that tells a non-technical owner what Korolev now does, for example “Warning when a worker run gets too expensive”.
 
    Keep lessons **generic**: the pattern and the fix. No customer data, secrets or private project details. A proposal must be **concrete**: which file changes (SKILL.md, a script, a template, a prompt) and how. Prefer turning a lesson into an **enforced check** in a script over adding prose.
 2. **Propose** at the end of a milestone, or when 3 or more lessons are pending:

@@ -216,5 +216,67 @@ class RoleTests(Sandbox):
         self.assertEqual(out, 'xhigh gpt-6.2-astra')
 
 
+class ReleaseTitleTests(Sandbox):
+    lesson_args = ('--title', 'Long worker chats waste tokens', '--detail', 'Long sessions cost more.',
+                   '--proposal', 'Flag costly runs.')
+    change_title = 'Warning when a worker run gets too expensive'
+
+    def write_legacy_lesson(self):
+        lesson_id = 'L-20261125-1'
+        log = self.base / 'home' / 'lessons' / 'lessons.jsonl'
+        log.parent.mkdir(parents=True)
+        events = [
+            {'event': 'add', 'id': lesson_id, 'kind': 'cost', 'title': self.lesson_args[1],
+             'detail': self.lesson_args[3], 'proposal': self.lesson_args[5]},
+            {'event': 'status', 'id': lesson_id, 'status': 'applied'},
+        ]
+        log.write_text(''.join(json.dumps(event) + '\n' for event in events))
+        return lesson_id, log
+
+    def draft_notes(self):
+        repo = self.base / 'draft-repo'
+        subprocess.run(['git', 'clone', '-q', '--local', '--no-hardlinks', '--no-tags', '--no-checkout',
+                        str(ROOT), str(repo)], check=True)
+        result = self.run_script('release.py', 'notes', '--repo', str(repo))
+        return result.stdout, (repo / 'RELEASE-NOTES.draft.md').read_text()
+
+    def test_add_requires_change_title(self):
+        result = self.run_script('lesson.py', 'add', *self.lesson_args, check=False)
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn('required: --change', result.stderr)
+
+    def test_retitle_appends_event_and_preserves_status(self):
+        lesson_id, log = self.write_legacy_lesson()
+        before = log.read_text()
+        self.assertIn(self.lesson_args[1], self.run_script('lesson.py', 'list').stdout)
+        self.run_script('lesson.py', 'retitle', lesson_id, '--change', self.change_title)
+        after = log.read_text()
+        self.assertTrue(after.startswith(before))
+        event = json.loads(after[len(before):])
+        self.assertEqual((event['event'], event['id'], event['change']), ('retitle', lesson_id, self.change_title))
+        listing = self.run_script('lesson.py', 'list', '--status', 'applied').stdout
+        self.assertIn(self.change_title, listing)
+        self.assertNotIn(self.lesson_args[1], listing)
+        _, draft = self.draft_notes()
+        self.assertIn(f'**{self.change_title}** ({lesson_id})', draft)
+
+    def test_draft_uses_change_title_and_keeps_commits_last(self):
+        lesson_id = self.run_script('lesson.py', 'add', *self.lesson_args, '--change', self.change_title,
+                                    '--status', 'applied').stdout.strip()
+        _, draft = self.draft_notes()
+        self.assertIn(f'- **{self.change_title}** ({lesson_id})\n  - Why: {self.lesson_args[3]}', draft)
+        self.assertNotIn('What changed:', draft)
+        self.assertEqual([line for line in draft.splitlines() if line.startswith('### ')],
+                         ['### Fixed', '### Commits'])
+
+    def test_draft_warns_when_falling_back_to_legacy_title(self):
+        lesson_id, _ = self.write_legacy_lesson()
+        output, draft = self.draft_notes()
+        self.assertIn(f'- **{self.lesson_args[1]}** ({lesson_id})\n'
+                      f'  - Why: {self.lesson_args[3]}\n  - What changed: {self.lesson_args[5]}', draft)
+        self.assertIn('Warning: no change title', output)
+        self.assertIn(f'lesson.py retitle {lesson_id}', output)
+
+
 if __name__ == '__main__':
     unittest.main()

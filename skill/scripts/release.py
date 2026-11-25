@@ -11,9 +11,9 @@ every outgoing commit must pass privacy_scan.py: no personal emails, home paths,
 secrets or private terms.
 
 The notes are built from lessons applied since the last release (lesson.py) and from
-the commits since the last tag. They are grouped as Added / Changed / Fixed, and each
-lesson contributes its ID, what happened and what changed. Edit the draft before
-publishing if needed. Publish:
+the commits since the last tag. Lessons are grouped as Added / Changed / Fixed, with
+their feature title, ID and reason for the change. Edit the draft before publishing
+if needed. Publish:
   1. refuses unless the repo is on main, clean, and up to date with origin/main;
   2. runs the offline tests (python3 -m unittest discover -s tests);
   3. bumps VERSION (minor if anything was Added, else patch) and prepends CHANGELOG.md;
@@ -57,10 +57,13 @@ def lesson_state():
             if event['event'] == 'add':
                 state[event['id']] = dict(event, status='pending', released=False)
             elif event['id'] in state:
-                if event.get('status') == 'released':
-                    state[event['id']]['released'] = True
+                item = state[event['id']]
+                if event['event'] == 'retitle':
+                    item['change'] = event['change']
+                elif event.get('status') == 'released':
+                    item['released'] = True
                 else:
-                    state[event['id']]['status'] = event.get('status', state[event['id']]['status'])
+                    item['status'] = event.get('status', item['status'])
     return state
 
 
@@ -90,9 +93,13 @@ def draft(repo):
     lessons = [l for l in lesson_state().values() if l['status'] == 'applied' and not l['released']]
     groups = {'Added': [], 'Changed': [], 'Fixed': []}
     for item in lessons:
-        groups[GROUP.get(item['kind'], 'Changed')].append(
-            f"- **{item['title']}** ({item['id']}{', safety rule' if item.get('safety') else ''})\n"
-            f"  - Why: {item['detail']}\n  - What changed: {item['proposal']}")
+        change = item.get('change')
+        entry = (f"- **{change or item['title']}** ({item['id']}{', safety rule' if item.get('safety') else ''})\n"
+                 f"  - Why: {item['detail']}")
+        if not change:
+            entry += (f"\n  - What changed: {item['proposal']}"
+                      f"\n  - Warning: no change title. Set one with `lesson.py retitle {item['id']} --change \"…\"`.")
+        groups[GROUP.get(item['kind'], 'Changed')].append(entry)
     lines = []
     for name in ('Added', 'Changed', 'Fixed'):
         if groups[name]:
