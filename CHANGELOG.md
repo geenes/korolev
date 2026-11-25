@@ -2,6 +2,39 @@
 
 All notable changes to Korolev.
 
+## v0.2.0 (2026-11-25)
+
+### Added
+- **Owner approves every Korolev publish, privacy-checked, maintainer-only** (L-20261125-9)
+  - Why: Self-publishing must not push without the owner seeing the changes, must never leak personal info, and must work only for the maintainer
+  - What changed: release.py propose, then approve, then publish, bound to the exact approved commit and notes; privacy_scan.py on every outgoing commit, tag and line; maintainer-only gate (upstream origin, maintainer login, local opt-in)
+
+### Changed
+- **Long worker chats waste tokens** (L-20261125-7)
+  - Why: Dev chats re-read ~160k tokens of their own history on every call after a few packages
+  - What changed: SKILL.md: a new worker session for every package, enforced by run_codex.py --ephemeral (done); a warning in run records when a run uses more than 1.5M input tokens (configurable; normal runs measured 0.4M–1M)
+
+### Fixed
+- **Busy checks must not pattern-match command lines** (L-20261125-4)
+  - Why: pgrep -f matched its own shell, so a free chat was reported busy twice and the task was not sent
+  - What changed: Add scripts/procs.py with lock-file and pid-start-time checks; SKILL.md forbids pgrep -f for busy detection
+- **A green test run can hide skipped integration tests** (L-20261125-5)
+  - Why: Integration tests skipped silently without one environment variable; the suite looked green but never tested the integration
+  - What changed: Add scripts/testcount.py: parse pytest/node results, fail on zero collected, compare skips with the base and a per-product allowlist; verify step must use it
+- **Hosted CI can be green without running tests** (L-20261125-6)
+  - Why: The CI job failed at sandbox start, and a later green run had to be checked by hand to prove tests executed
+  - What changed: Add scripts/ci_wait.py: find the run by exact commit SHA with retries, gh run watch --exit-status, then confirm from the job log that tests were collected and ran
+
+### Commits
+- aa343f9 Raise the large-context warning default to 1.5M input tokens; fix rule numbering
+- 49b14ad Task 04-context-warning: warn about expensive worker context (lesson L-2
+- a855710 Task 03-procs: reliable "is it running" checks without pattern matching
+- 1454e38 Task 02-ci-wait: wait for hosted CI by exact commit and prove tests ran
+- 250e5f8 Task 01-testcount: prove that tests actually ran (lesson L-20261125-5)
+- 42b2a2b Owner-approved, privacy-checked, maintainer-only self-publishing
+- cd02fe1 README: call the Telegram channel the Korolev bot
+
+
 ## v0.1.0 (2026-11-25)
 
 First public-ready version of Korolev: a chief designer for your AI coding crew.
