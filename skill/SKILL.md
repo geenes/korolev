@@ -25,6 +25,7 @@ Write owner-facing text in the language set by `language` in `~/.config/korolev/
    - never call `getUpdates` on any other bot, since the owner may use it elsewhere;
    - only `inbox.py` reads the bot, and it holds a lock, so only one reader ever runs.
 9. **Check whether a run is busy or free** only with `procs.py` or its lock. Never use `pgrep -f` or `ps | grep`.
+10. **Worker sandbox:** run workers in bubblewrap by default. Never disable it without the owner's decision.
 
 ## Session discipline
 

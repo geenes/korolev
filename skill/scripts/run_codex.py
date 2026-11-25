@@ -8,7 +8,8 @@ Each run is a new ephemeral session: no history, a small context. Read-only role
 cannot change files. --write (or a role with write=true) allows workspace writes
 in the clone only. The final message goes to OUT, relative to the product folder
 unless absolute. Events and usage are kept in the product's .runs/ folder and
-summarized in USAGE.jsonl. Exit code: Codex's own; 124 on timeout; 75 if the write lock is busy.
+summarized in USAGE.jsonl. Exit code: Codex's own; 124 on timeout; 75 if the write
+lock is busy; 78 if the worker sandbox fails preflight.
 Run it in the background: the coordinator wakes when it exits.
 """
 import argparse
@@ -25,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (CONFIG_DIR, append_line, codex_home, display_name, isolate_codex_home,  # noqa: E402
                     now, product_dir, roles, work_repo)
 from procs import LockBusyError, run_lock  # noqa: E402
+import sandbox  # noqa: E402
 
 HEADER = """You are the {role} for the project "{display}" in a Korolev-coordinated team.
 Repository (your working directory): {cwd}
@@ -126,7 +128,7 @@ def main():
     role = roles().get(args.role)
     if not role:
         sys.exit(f'unknown role {args.role}; known: {", ".join(roles())}')
-    pdir = product_dir(args.product)
+    pdir = product_dir(args.product).resolve()
     if not pdir.exists():
         sys.exit(f'no product folder {pdir}; run onboard.py init first')
     cwd = Path(args.cwd or work_repo(args.product)).expanduser().resolve()
@@ -165,9 +167,25 @@ def run(args, role, pdir, cwd, write, lock_fd):
            '--json', '-o', str(out), '-']
     isolated = isolate_codex_home()
     try:
-        env = dict(os.environ, CODEX_HOME=str(codex_home())) if isolated else None
+        worker_home = codex_home() if isolated else None
     except OSError as error:
         sys.exit(f'could not set up isolated Codex home: {error}')
+    env = dict(os.environ, CODEX_HOME=str(worker_home)) if isolated else None
+    sandbox_mode = 'off'
+    if sandbox.enabled():
+        repo = work_repo(args.product).resolve()
+        try:
+            clone = repo if repo.is_dir() else cwd
+            if not cwd.is_relative_to(clone):
+                raise OSError(f'working directory is outside the project clone: {cwd}')
+            layout = dict(clone=clone, product_dir=pdir, codex_home=worker_home, write=write)
+            # Check the actual mount layout without invoking the worker CLI twice.
+            sandbox.selftest(**layout, check_version=False)
+            cmd = sandbox.wrap(cmd, **layout)
+        except OSError as error:
+            print(f'Worker sandbox failed: {error}\n{sandbox.disable_hint()}', file=sys.stderr)
+            return 78
+        sandbox_mode = 'bwrap'
     started = now()
     begin = time.time()
     timed_out = False
@@ -192,7 +210,7 @@ def run(args, role, pdir, cwd, write, lock_fd):
     usage, turns, commands_run = read_event_stats(events)
     record = {'role': args.role, 'product': args.product, 'model': model, 'effort': effort,
               'codex_home': 'isolated' if isolated else 'user',
-              'sandbox': 'workspace-write' if write else 'read-only', 'started': started, 'ended': now(),
+              'sandbox': sandbox_mode, 'started': started, 'ended': now(),
               'seconds': round(time.time() - begin), 'exit': code, 'timed_out': timed_out,
               'out': str(out), 'out_bytes': out.stat().st_size if out.exists() else 0,
               'events': str(events), 'usage': usage, 'commit': commit,

@@ -64,6 +64,7 @@ One install handles any number of projects. Each one gets its own `~/korolev/pro
 | `doctor.py` | preflight: Codex, gh, models, disk, Telegram, skill links |
 | `onboard.py init <repo>` | clone (gh for private repos), state folder, `INVENTORY.md` |
 | `run_codex.py --role …` | one fresh ephemeral Codex session per job; read-only or write; timeout; usage log |
+| `sandbox.py selftest` | check the default bubblewrap worker filesystem sandbox; the owner can opt out with `"worker_sandbox": false` in `~/.config/korolev/config.json` |
 | `opinions.py` | Astra xhigh and Sol 5.6 xhigh in parallel, for second and third opinions |
 | `notify.py` / `inbox.py` | owner questions out, answers in, owner-only, routed per project, single locked reader |
 | `setup_telegram.py` | two-minute bot connection wizard |

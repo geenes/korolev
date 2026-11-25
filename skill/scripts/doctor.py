@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import BOT_STATE, HOME, SKILL, TELEGRAM_ENV, codex_home, isolate_codex_home, roles  # noqa: E402
+import sandbox  # noqa: E402
 
 results = []
 
@@ -61,6 +62,13 @@ def main():
             report(auth_problem, 'isolated codex auth', 'missing auth symlink or target')
     except OSError as error:
         report(auth_problem, 'isolated codex auth', str(error))
+    if sandbox.enabled():
+        try:
+            report('PASS', 'worker sandbox', sandbox.selftest())
+        except OSError as error:
+            report('FAIL', 'worker sandbox', f'{error} {sandbox.disable_hint()}')
+    else:
+        report('WARN', 'worker sandbox', 'off by configuration')
     try:
         HOME.mkdir(parents=True, exist_ok=True)
         probe = HOME / '.write-test'
