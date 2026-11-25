@@ -19,6 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import CONFIG_DIR, TELEGRAM_ENV  # noqa: E402
+from i18n import t  # noqa: E402
 
 
 def call(token, method, params=None, timeout=70):
@@ -57,9 +58,7 @@ def main():
                     os.umask(old)
                 TELEGRAM_ENV.chmod(0o600)
                 call(token, 'getUpdates', {'offset': offset, 'timeout': 0})
-                call(token, 'sendMessage', {'chat_id': message['chat']['id'],
-                                            'text': 'Korolev подключён. Здесь будут вопросы по проектам; '
-                                                    'отвечайте реплаем или пишите «проект: указание».'})
+                call(token, 'sendMessage', {'chat_id': message['chat']['id'], 'text': t('telegram_welcome')})
                 print(f'Connected. Config written to {TELEGRAM_ENV} (0600).')
                 return
     sys.exit('no /start received within 5 minutes; run again')

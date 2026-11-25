@@ -17,6 +17,7 @@ import argparse
 import fcntl
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -26,12 +27,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import BOT_STATE, HOME, append_line, display_name, write_atomic  # noqa: E402
+from i18n import t  # noqa: E402
 from notify import load_env  # noqa: E402
 
 INBOX = BOT_STATE / 'INBOX.jsonl'
 OFFSET = BOT_STATE / 'offset'
 SENT = BOT_STATE / 'SENT.jsonl'
 LOCK = BOT_STATE / 'inbox.lock'
+RELEASE_APPROVAL_REPLY = re.compile(r'^(a|а|да|yes|ok|ок|approve|approved|confirmed|опубликовать|✅)\b')
+RELEASE_REJECTION_REPLY = re.compile(r'^(b|б|нет|no|reject|отклонить|не публиковать)\b')
 
 
 def call(token, method, params, timeout=70):
@@ -140,9 +144,9 @@ def main():
                 record = {'update_id': update['update_id'], 'date': message['date'], 'text': text,
                           'message_id': message['message_id'], 'reply_to': reply_to,
                           'project': project_for(reply_to, text)}
-                note = (f'Проект: {display_name(record["project"])}. ' if record['project']
-                        else 'Проект не определён: ответьте реплаем на вопрос или начните с «проект: …». ')
-                record['ack'] = acknowledge(token, chat, message['message_id'], 'Принято ✓ ' + note + 'Передал Claude.')
+                receipt = (t('inbox_received', project=display_name(record['project'])) if record['project']
+                           else t('inbox_unknown_project'))
+                record['ack'] = acknowledge(token, chat, message['message_id'], receipt)
                 append_line(INBOX, record)
                 seen.add(update['update_id'])
                 accepted.append(record)

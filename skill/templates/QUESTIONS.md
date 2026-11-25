@@ -1,7 +1,7 @@
-Вопросы по проекту. Ответьте реплаем на это сообщение, например: 1a 2b
+Project questions. Reply to this message, for example: 1a 2b
 
 1. <question in one line>
- a) <option> (рекомендую): <one-line why>
+ a) <option> (recommended): <one-line why>
  b) <option>
 
-Остальное продолжаю без вас.
+I’ll continue with the rest in the meantime.

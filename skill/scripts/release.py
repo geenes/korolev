@@ -35,6 +35,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from common import BOT_STATE, CONFIG_DIR, HOME, append_line, now  # noqa: E402
+from i18n import t  # noqa: E402
+from inbox import RELEASE_APPROVAL_REPLY, RELEASE_REJECTION_REPLY  # noqa: E402
 
 LOG = HOME / 'lessons' / 'lessons.jsonl'
 GROUP = {'improvement': 'Added', 'tooling': 'Changed', 'cost': 'Changed', 'mistake': 'Fixed'}
@@ -153,14 +155,12 @@ def main():
         scan = privacy(repo, 'origin/main..HEAD')
         if not scan['clean']:
             sys.exit('privacy scan NOT clean, nothing proposed:\n' + json.dumps(scan['findings'], ensure_ascii=False, indent=1))
-        commits = sh(['git', 'log', '--format=- %h %s', 'origin/main..HEAD'], repo) or '- (release commit only)'
+        commits = sh(['git', 'log', '--format=- %h %s', 'origin/main..HEAD'], repo) or t('release_commit_only')
         files = sh(['git', 'diff', '--stat', 'origin/main', 'HEAD'], repo).splitlines()
         titles = [l.strip()[2:].split('** (')[0].strip('*') for l in notes.splitlines() if l.startswith('- **')]
-        text = (f'Korolev хочет опубликовать v{version} на GitHub (публичный репозиторий).\n\n'
-                'Что изменится:\n' + ('\n'.join(f'• {t}' for t in titles) or '• см. коммиты') +
-                f'\n\nКоммиты:\n{commits}\n\nФайлы: {files[-1].strip() if files else "—"}\n'
-                f'Проверка приватности: чисто ✅ ({scan["commits"]} коммит(ов), нет личных email, путей, секретов и приватных слов)\n\n'
-                'Ответьте реплаем: a — опубликовать, b — не публиковать.')
+        changes = '\n'.join(f'• {title}' for title in titles) or t('release_see_commits')
+        text = t('release_proposal', version=version, changes=changes, commits=commits,
+                 files=files[-1].strip() if files else '—', commit_count=scan['commits'])
         notes_file = state_dir / f'release-notes-v{version}.md'
         notes_file.write_text(notes)
         result = subprocess.run([sys.executable, '-I', str(HERE / 'notify.py'), '--project', 'korolev', text],
@@ -187,9 +187,9 @@ def main():
             print(f"no owner reply yet to message {pending['message_id']}")
             sys.exit(2)
         answer = replies[-1]['text'].strip().lower()
-        if re.match(r'^(a|а|да|yes|ok|ок|approve|approved|confirmed|опубликовать|✅)\b', answer):
+        if RELEASE_APPROVAL_REPLY.match(answer):
             pending.update(status='approved', approval_message=replies[-1]['message_id'], approved=now())
-        elif re.match(r'^(b|б|нет|no|reject|отклонить|не публиковать)\b', answer):
+        elif RELEASE_REJECTION_REPLY.match(answer):
             pending.update(status='rejected', rejected=now())
         else:
             print(f'unclear reply: {answer[:60]!r}; ask the owner again')
@@ -244,8 +244,8 @@ def main():
     pending_path.write_text(json.dumps(pending, ensure_ascii=False, indent=2))
     print(json.dumps({'version': version, 'sha': sha, 'release': url, 'lessons': lesson_ids}))
     if not args.no_notify:
-        summary = f'Опубликовано: Korolev v{version}\n{url}\n\nЧто нового:\n' + '\n'.join(
-            '• ' + line.strip()[2:] for line in notes.splitlines() if line.startswith('- **'))
+        changes = '\n'.join('• ' + line.strip()[2:] for line in notes.splitlines() if line.startswith('- **'))
+        summary = t('release_published', version=version, url=url, changes=changes)
         subprocess.run([sys.executable, '-I', str(HERE / 'notify.py'), '--project', 'korolev', summary])
 
 

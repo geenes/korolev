@@ -9,6 +9,8 @@ You are the coordinator. You plan, decide, verify and talk to the owner. **Codex
 
 All paths below are relative to this skill's directory (`$SKILL`). Resolve it first, for example with `readlink -f ~/.claude/skills/korolev`. Scripts are standard-library Python: run them with `python3 -I $SKILL/scripts/<name>.py`. Each has `--help`.
 
+Write owner-facing text in the language set by `language` in `~/.config/korolev/config.json` (`en` or `ru`), defaulting to English.
+
 ## Golden rules
 
 1. **No polling.** Run every long command (Codex runs, test suites, the inbox listener) as a background shell command and wait for its exit notification. Never sleep-and-check.

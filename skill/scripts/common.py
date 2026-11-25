@@ -28,6 +28,15 @@ def roles():
     return merged
 
 
+def language():
+    try:
+        config = json.loads((CONFIG_DIR / 'config.json').read_text(encoding='utf-8'))
+    except (FileNotFoundError, ValueError):
+        return 'en'
+    value = config.get('language') if isinstance(config, dict) else None
+    return value if value in ('en', 'ru') else 'en'
+
+
 def slug(text):
     value = re.sub(r'[^A-Za-z0-9._-]+', '-', text.strip()).strip('-.').lower()
     if not value:

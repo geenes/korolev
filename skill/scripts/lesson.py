@@ -21,6 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import HOME, append_line, now  # noqa: E402
+from i18n import t  # noqa: E402
 
 LOG = HOME / 'lessons' / 'lessons.jsonl'
 
@@ -88,11 +89,16 @@ def main():
         if not pending:
             print('no pending lessons')
             return
-        lines = ['Предложения по улучшению Korolev. Ответьте реплаем, например: 1a 2b', '']
+        lines = [t('lesson_header'), '']
         for number, item in enumerate(pending, 1):
-            flag = ' ⚠️ меняет правила безопасности' if item.get('safety') else ''
-            lines += [f"{number}. {item['title']}{flag}", f"   Что случилось: {item['detail']}",
-                      f"   Предлагаю: {item['proposal']}", '   a) принять  b) отклонить', '']
+            flag = ' ' + t('lesson_safety') if item.get('safety') else ''
+            lines += [
+                f"{number}. {item['title']}{flag}",
+                '   ' + t('lesson_detail', detail=item['detail']),
+                '   ' + t('lesson_proposal', proposal=item['proposal']),
+                '   ' + t('lesson_options'),
+                '',
+            ]
         result = subprocess.run([sys.executable, '-I', str(Path(__file__).with_name('notify.py')),
                                  '--project', 'korolev', '\n'.join(lines)], capture_output=True, text=True)
         if result.returncode != 0:
