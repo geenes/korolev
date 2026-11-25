@@ -11,6 +11,11 @@
 ## Acceptance checks (you run them; the coordinator reruns them)
 - `<command>` → exit 0, with N tests collected and run (not skipped)
 
+## Keep it cheap
+- Use `-q` when supported and `| tail -n 40` for long logs. Preserve the test runner's exit status.
+- Open only the files you need, by exact path. Avoid repo-wide `cat` and `grep -r`. Scope searches to a narrow path.
+- Reuse what you already read until a file changes.
+
 ## Stop rules
 - No push, tag, deploy, paid API, real data or edits outside allowed paths.
 - If blocked or something is unclear, stop and report; do not guess product decisions.

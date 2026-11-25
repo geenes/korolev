@@ -42,15 +42,33 @@ Your final message is saved as the deliverable: make it complete, structured and
 
 def usage_from(events_path, *, include_turns=False):
     """Sum reported usage and optionally return the number of completed turns."""
+    usage, turns, _ = read_event_stats(events_path)
+    if include_turns:
+        return usage, turns
+    return usage
+
+
+def read_event_stats(events_path):
     total = {}
     turns = 0
+    commands_run = 0
     try:
         for line in events_path.read_text(errors='replace').splitlines():
             try:
                 event = json.loads(line)
             except ValueError:
                 continue
-            if event.get('type') != 'turn.completed':
+            if not isinstance(event, dict):
+                continue
+            event_type = event.get('type')
+            if event_type == 'item.completed':
+                item = event.get('item')
+                if isinstance(item, dict) and item.get('type') in (
+                    'command_execution', 'mcp_tool_call', 'dynamic_tool_call', 'collab_tool_call',
+                    'web_search', 'image_generation', 'image_view',
+                ):
+                    commands_run += 1
+            if event_type != 'turn.completed':
                 continue
             turns += 1
             if isinstance(event.get('usage'), dict):
@@ -59,19 +77,21 @@ def usage_from(events_path, *, include_turns=False):
                         total[key] = total.get(key, 0) + value
     except OSError:
         pass
-    usage = total or None
-    if include_turns:
-        return usage, turns
-    return usage
+    return total or None, turns, commands_run
 
 
-def context_warn_tokens():
+def warning_thresholds():
+    thresholds = {'context_warn_tokens': 1_500_000, 'uncached_warn_tokens': 400_000}
     try:
         config = json.loads((CONFIG_DIR / 'config.json').read_text())
     except (OSError, ValueError):
-        config = {}
-    threshold = config.get('context_warn_tokens') if isinstance(config, dict) else None
-    return threshold if type(threshold) in (int, float) else 1_500_000  # typical Codex runs use 0.4M-1M input tokens per package (measured 2026-11-25)
+        return thresholds
+    if isinstance(config, dict):
+        for key in thresholds:
+            value = config.get(key)
+            if type(value) in (int, float):
+                thresholds[key] = value
+    return thresholds
 
 
 def commit_changes(cwd, task, model):
@@ -169,21 +189,31 @@ def run(args, role, pdir, cwd, write, lock_fd):
     commit = None
     if write and code == 0:
         commit = commit_changes(cwd, task, model)
-    usage, turns = usage_from(events, include_turns=True)
+    usage, turns, commands_run = read_event_stats(events)
     record = {'role': args.role, 'product': args.product, 'model': model, 'effort': effort,
               'codex_home': 'isolated' if isolated else 'user',
               'sandbox': 'workspace-write' if write else 'read-only', 'started': started, 'ended': now(),
               'seconds': round(time.time() - begin), 'exit': code, 'timed_out': timed_out,
               'out': str(out), 'out_bytes': out.stat().st_size if out.exists() else 0,
-              'events': str(events), 'usage': usage, 'commit': commit}
+              'events': str(events), 'usage': usage, 'commit': commit,
+              'uncached_input_tokens': None, 'commands_run': commands_run}
     input_tokens = (usage or {}).get('input_tokens')
     if input_tokens is not None:
+        uncached_input_tokens = input_tokens - usage.get('cached_input_tokens', 0)
+        record['uncached_input_tokens'] = uncached_input_tokens
         if turns:
             record['input_tokens_per_turn'] = input_tokens / turns
-        threshold = context_warn_tokens()
+        thresholds = warning_thresholds()
+        threshold = thresholds['context_warn_tokens']
         if input_tokens > threshold:
             warning = f'large context: {input_tokens:,} input tokens exceeded the {threshold:,} token threshold'
             record['warning'] = warning
+            print(f'WARNING: {warning}', file=sys.stderr)
+        uncached_threshold = thresholds['uncached_warn_tokens']
+        if uncached_input_tokens > uncached_threshold:
+            warning = (f'large uncached input: {uncached_input_tokens:,} uncached input tokens exceeded '
+                       f'the {uncached_threshold:,} token threshold')
+            record['uncached_warning'] = warning
             print(f'WARNING: {warning}', file=sys.stderr)
     append_line(pdir / 'USAGE.jsonl', record)
     print(json.dumps(record, ensure_ascii=False))
