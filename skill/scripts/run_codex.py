@@ -22,7 +22,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import append_line, display_name, now, product_dir, roles, work_repo  # noqa: E402
+from common import CONFIG_DIR, append_line, display_name, now, product_dir, roles, work_repo  # noqa: E402
 from procs import LockBusyError, run_lock  # noqa: E402
 
 HEADER = """You are the {role} for the project "{display}" in a Korolev-coordinated team.
@@ -39,21 +39,38 @@ Your final message is saved as the deliverable: make it complete, structured and
 """
 
 
-def usage_from(events_path):
+def usage_from(events_path, *, include_turns=False):
+    """Sum reported usage and optionally return the number of completed turns."""
     total = {}
+    turns = 0
     try:
         for line in events_path.read_text(errors='replace').splitlines():
             try:
                 event = json.loads(line)
             except ValueError:
                 continue
-            if event.get('type') == 'turn.completed' and isinstance(event.get('usage'), dict):
+            if event.get('type') != 'turn.completed':
+                continue
+            turns += 1
+            if isinstance(event.get('usage'), dict):
                 for key, value in event['usage'].items():
                     if isinstance(value, (int, float)):
                         total[key] = total.get(key, 0) + value
     except OSError:
         pass
-    return total or None
+    usage = total or None
+    if include_turns:
+        return usage, turns
+    return usage
+
+
+def context_warn_tokens():
+    try:
+        config = json.loads((CONFIG_DIR / 'config.json').read_text())
+    except (OSError, ValueError):
+        config = {}
+    threshold = config.get('context_warn_tokens') if isinstance(config, dict) else None
+    return threshold if type(threshold) in (int, float) else 200_000
 
 
 def commit_changes(cwd, task, model):
@@ -146,11 +163,21 @@ def run(args, role, pdir, cwd, write, lock_fd):
     commit = None
     if write and code == 0:
         commit = commit_changes(cwd, task, model)
+    usage, turns = usage_from(events, include_turns=True)
     record = {'role': args.role, 'product': args.product, 'model': model, 'effort': effort,
               'sandbox': 'workspace-write' if write else 'read-only', 'started': started, 'ended': now(),
               'seconds': round(time.time() - begin), 'exit': code, 'timed_out': timed_out,
               'out': str(out), 'out_bytes': out.stat().st_size if out.exists() else 0,
-              'events': str(events), 'usage': usage_from(events), 'commit': commit}
+              'events': str(events), 'usage': usage, 'commit': commit}
+    input_tokens = (usage or {}).get('input_tokens')
+    if input_tokens is not None:
+        if turns:
+            record['input_tokens_per_turn'] = input_tokens / turns
+        threshold = context_warn_tokens()
+        if input_tokens > threshold:
+            warning = f'large context: {input_tokens:,} input tokens exceeded the {threshold:,} token threshold'
+            record['warning'] = warning
+            print(f'WARNING: {warning}', file=sys.stderr)
     append_line(pdir / 'USAGE.jsonl', record)
     print(json.dumps(record, ensure_ascii=False))
     if code == 0 and record['out_bytes'] == 0:

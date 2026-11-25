@@ -82,6 +82,7 @@ Do one package at a time. For each package `NN-slug`:
    `python3 -I $SKILL/scripts/run_codex.py --role builder --product <name> --prompt products/<name>/packages/NN-slug/TASK.md --out packages/NN-slug/HANDOFF.md --write`
 
    This runs Sol 6.2 at high effort, or xhigh with `--effort xhigh` for hard packages. It gets a fresh session every time, so the context stays small. Codex's write sandbox keeps `.git` read-only, so the builder leaves its changes in the working tree and **`run_codex.py` commits them** under the task's title (author "Korolev builder"). The commit SHA is in the printed run record and in `USAGE.jsonl`.
+   If the run reports a large-context warning, split the package or trim the task's references.
 3. **Verify** with one shell command in the clone:
    - a new commit on the base;
    - the changed paths are within the allowed paths;
