@@ -106,7 +106,8 @@ def draft(repo):
 def wait_ci(repo, sha):
     slug = sh(['gh', 'repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'], repo)
     if (HERE / 'ci_wait.py').exists():
-        result = subprocess.run([sys.executable, '-I', str(HERE / 'ci_wait.py'), slug, sha], capture_output=True, text=True)
+        result = subprocess.run([sys.executable, '-I', str(HERE / 'ci_wait.py'), slug, sha, '--branch', 'main'],
+                                capture_output=True, text=True)
         print(result.stdout.strip()[-800:])
         return result.returncode == 0
     run_id = None

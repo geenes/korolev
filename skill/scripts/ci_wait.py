@@ -53,7 +53,8 @@ def find_run(args):
             break
         runs = workflow_runs(checked_output(result, 'gh api'))
         matches = {run['id'] for run in runs if run['head_sha'] == args.sha
-                   and (args.workflow is None or run['name'] == args.workflow)}
+                   and (args.workflow is None or run['name'] == args.workflow)
+                   and (args.branch is None or run.get('head_branch') == args.branch)}
         if len(matches) > 1:
             hint = '; select one with --workflow NAME' if args.workflow is None else ''
             raise RuntimeError(f'multiple workflow runs match the commit{hint}')
@@ -130,6 +131,7 @@ def main(argv=None):
     parser.add_argument('repo', metavar='owner/repo')
     parser.add_argument('sha', metavar='full-sha', type=str.lower)
     parser.add_argument('--workflow', help='exact workflow name')
+    parser.add_argument('--branch', metavar='NAME', help='exact head branch name')
     parser.add_argument('--find-timeout', type=int, default=300, help='seconds to find a run (default: 300)')
     parser.add_argument('--min-tests', type=int, help='minimum collected tests in the CI log')
     args = parser.parse_args(argv)

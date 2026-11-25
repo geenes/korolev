@@ -109,6 +109,22 @@ class CIWaitTests(unittest.TestCase):
         result = self.invoke('--workflow', 'tests', responses=[discovered(run(), run(456))])
         self.assert_failure(result, 'multiple')
 
+    def test_branch_filter_disambiguates_branch_and_tag_runs(self):
+        runs = discovered(
+            {**run(456), 'head_branch': 'v1.2.3'},
+            {**run(), 'head_branch': 'main'},
+        )
+        result = self.invoke(responses=[runs])
+        self.assert_failure(result, 'multiple')
+        self.assertEqual(result[2], [API])
+
+        code, verdict, calls = self.invoke(
+            '--branch', 'main', responses=[runs, response(), viewed()])
+        self.assertEqual(code, 0)
+        self.assertTrue(verdict['ok'])
+        self.assertEqual(verdict['run_id'], 123)
+        self.assertEqual(calls, [API, WATCH, VIEW])
+
     def test_skipped_job_fails_even_when_run_succeeds(self):
         result = self.invoke(responses=[discovered(run()), response(), viewed(job='skipped')])
         self.assert_failure(result, 'skipped')
