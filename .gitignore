@@ -4,3 +4,5 @@ __pycache__/
 *.env
 *.session
 products/*/packages/*/events.jsonl
+reviews/*events.jsonl
+reviews/*.stderr

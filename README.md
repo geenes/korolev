@@ -40,20 +40,35 @@ Korolev came out of one long day running two linked production projects with AI 
 | Two repos that call each other were released separately | Pairs: linked repos are promoted, tagged and deployed together |
 | Owner decisions were lost somewhere in a chat | `DECISIONS.md`, dated and binding |
 
-## What's inside (v0.1, in progress)
+## Quick start
 
-- `skill/SKILL.md`: the coordinator procedure. It works as a Claude Code skill and as a Codex skill.
-- `dispatch.py`: launches one worker run (Codex, Kilo or Claude) with a timeout, a structured handoff and token accounting.
-- `verify.py`: mechanical acceptance. The commit is real, only allowed paths changed, no secrets, gates rerun independently, tests actually executed.
-- `promote.py`: integration branch first, fast-forward main only on a verified full gate, matching tags for paired repos.
-- `notify.py`: Telegram send, batched questions, and your replies collected into an inbox.
-- `stand.py`: a polite heavy-test stand for shared servers, with a lock, a daily run budget, a scratch quota and a disk floor.
+```bash
+git clone https://github.com/geenes/korolev && cd korolev
+./install.sh                     # once per machine: links the skill for Claude Code and Codex, runs the preflight check
+# optional, a Telegram owner channel with your own dedicated bot from @BotFather:
+echo "<bot token>" | python3 skill/scripts/setup_telegram.py   # then send /start to your bot
+```
 
-Standard library Python, no framework, nothing to host.
+Then, in any Claude Code session:
 
-## Status
+> korolev https://github.com/you/your-repo
 
-🧪 **Spec stage.** [`SPEC.md`](SPEC.md) is being reviewed by Astra xhigh and Sol 5.6 xhigh, then Sol 6.2 builds it. The first real user is a two-repo product (an SEO data worker plus a customer cabinet). Expect rough edges and fast changes.
+Korolev clones the repo into its own workspace (your checkout is never touched) and inventories it. Codex Sol then analyzes the code and specs. Claude adopts and corrects the existing plan, or writes one. Astra and Sol 5.6 review it in parallel, and the product questions go to your phone. Building starts when you say go.
+
+One install handles any number of projects. Each one gets its own `~/korolev/products/<name>/` (STATE, DECISIONS, PLAN, questions, opinions) and `~/korolev/work/<name>/repo`.
+
+## What's inside (v0.1)
+
+| Script | Job |
+|---|---|
+| `doctor.py` | preflight: Codex, gh, models, disk, Telegram, skill links |
+| `onboard.py init <repo>` | clone (gh for private repos), state folder, `INVENTORY.md` |
+| `run_codex.py --role …` | one fresh ephemeral Codex session per job; read-only or write; timeout; usage log |
+| `opinions.py` | Astra xhigh and Sol 5.6 xhigh in parallel, for second and third opinions |
+| `notify.py` / `inbox.py` | owner questions out, answers in, owner-only, routed per project, single locked reader |
+| `setup_telegram.py` | two-minute bot connection wizard |
+
+Standard library Python, no framework, nothing to host. The full verification and promotion machinery (`verify.py`, `promote.py`, pairs) is specified in [`SPEC.md`](SPEC.md) and comes next.
 
 ## Why "Korolev"?
 
