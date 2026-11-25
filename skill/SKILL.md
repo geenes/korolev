@@ -14,7 +14,7 @@ Write owner-facing text in the language set by `language` in `~/.config/korolev/
 ## Golden rules
 
 1. **No polling.** Run every long command (Codex runs, test suites, the inbox listener) as a background shell command and wait for its exit notification. Never sleep-and-check.
-2. **State lives in files**, under `$KOROLEV_HOME/products/<name>/` (default `~/korolev`): `STATE.md`, `DECISIONS.md`, `PLAN.md`, `QUESTIONS.md`, and analysis and opinion files. Start every session by reading `STATE.md` and `DECISIONS.md` for the product. Never rely on chat memory.
+2. **State lives in files**, under `$KOROLEV_HOME/products/<name>/` (default `~/korolev`): `STATE.md`, `DECISIONS.md`, `PLAN.md`, `QUESTIONS.md`, and analysis and opinion files. Follow Session discipline when resuming. Never rely on chat memory.
 3. **Read summaries, not transcripts.** Read Codex output files (bounded by the prompts) and verify claims with one shell command (git log, diff stat, test exit codes). Read diffs yourself only for money, auth or security code, and prefer a reviewer run there.
 4. **The original repo is read-only.** Work happens in Korolev's own clone at `$KOROLEV_HOME/work/<name>/repo`. Never write into a user's checkout.
 5. **Secrets:** never print tokens or put them in prompts, files or Telegram. Credentials are referenced only by path.
@@ -25,6 +25,12 @@ Write owner-facing text in the language set by `language` in `~/.config/korolev/
    - never call `getUpdates` on any other bot, since the owner may use it elsewhere;
    - only `inbox.py` reads the bot, and it holds a lock, so only one reader ever runs.
 9. **Check whether a run is busy or free** only with `procs.py` or its lock. Never use `pgrep -f` or `ps | grep`.
+
+## Session discipline
+
+- Start a fresh coordinator session for each milestone and whenever the chat gets long. Launch it from `~/korolev` (or your configured `KOROLEV_HOME`) to keep unrelated product instructions and assistant memory out of the session.
+- Before ending the session, draft short Markdown notes with the next action and a `### Suggested skills` section near the top. Reference specs, plans, decisions, commits and verification by path, URL or revision. Omit secrets and mark claims without evidence as **unverified**. Write the handoff with `python3 -I $SKILL/scripts/handoff.py --product NAME --file NOTES.md`.
+- To resume, read only the product's `STATE.md` (including `## Session handoff`), `DECISIONS.md`, and `python3 -I $SKILL/scripts/inbox.py --show --project NAME` output. Open referenced files as the next action requires them.
 
 ## Phase 0: preflight (every new machine or session)
 
@@ -84,7 +90,7 @@ It checks Codex, the GitHub CLI login, the Telegram config, `KOROLEV_HOME`, disk
    Then **stop and wait for the owner's go-ahead** before building, unless `DECISIONS.md` already delegates it.
 9. Write `STATE.md` (one page) so a fresh session can continue.
 
-When the owner answers (in the inbox or in chat), record each answer in `DECISIONS.md` with the date, then update `PLAN.md`.
+When the owner answers (in the inbox or in chat), record each answer in `DECISIONS.md` with the date and remove the resolved question from Pending, then update `PLAN.md`.
 
 ## Phase 2: build loop (after the go-ahead)
 

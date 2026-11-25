@@ -1,6 +1,6 @@
 # State: {{PROJECT}} (updated {{DATE}})
 
-One page. A fresh coordinator session must be able to continue from this file alone.
+One page. A fresh coordinator session reads this file with `DECISIONS.md` and the product inbox.
 
 ## Where things are
 - Korolev clone: see product.json · Original repo: read-only
@@ -21,3 +21,5 @@ One page. A fresh coordinator session must be able to continue from this file al
 
 ## Next
 1. …
+
+## Session handoff
