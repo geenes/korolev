@@ -22,7 +22,7 @@ All paths below are relative to this skill's directory (`$SKILL`). Resolve it fi
    - use only the Korolev bot configured in `~/.config/korolev/telegram.env`;
    - never call `getUpdates` on any other bot, since the owner may use it elsewhere;
    - only `inbox.py` reads the bot, and it holds a lock, so only one reader ever runs.
-8. **Check whether a run is busy or free** only with `procs.py` or its lock. Never use `pgrep -f` or `ps | grep`.
+9. **Check whether a run is busy or free** only with `procs.py` or its lock. Never use `pgrep -f` or `ps | grep`.
 
 ## Phase 0: preflight (every new machine or session)
 

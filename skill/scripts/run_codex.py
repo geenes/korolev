@@ -70,7 +70,7 @@ def context_warn_tokens():
     except (OSError, ValueError):
         config = {}
     threshold = config.get('context_warn_tokens') if isinstance(config, dict) else None
-    return threshold if type(threshold) in (int, float) else 200_000
+    return threshold if type(threshold) in (int, float) else 1_500_000  # typical Codex runs use 0.4M-1M input tokens per package (measured 2026-11-25)
 
 
 def commit_changes(cwd, task, model):

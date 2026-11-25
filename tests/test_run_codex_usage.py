@@ -71,14 +71,14 @@ class RunCodexUsageTests(unittest.TestCase):
         self.assertEqual(stderr, '')
 
     def test_warns_when_total_exceeds_default_and_records_average(self):
-        record, stderr = self.run_worker({'input_tokens': 100_001}, {'input_tokens': 100_000})
-        self.assertEqual(record.get('input_tokens_per_turn'), 100_000.5)
+        record, stderr = self.run_worker({'input_tokens': 750_001}, {'input_tokens': 750_000})
+        self.assertEqual(record.get('input_tokens_per_turn'), 750_000.5)
         warning = record.get('warning', '')
         self.assertTrue(warning.startswith('large context: '), warning)
         self.assertEqual(stderr.splitlines(), [f'WARNING: {warning}'])
 
     def test_no_warning_at_or_below_default(self):
-        for tokens in (199_999, 200_000):
+        for tokens in (1_499_999, 1_500_000):
             with self.subTest(tokens=tokens):
                 record, stderr = self.run_worker({'input_tokens': tokens})
                 self.assertNotIn('warning', record)
