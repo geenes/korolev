@@ -87,9 +87,8 @@ Do one package at a time. For each package `NN-slug`:
    - the working tree is clean;
    - rerun the package's fast checks yourself and compare the exit codes with the handoff;
    - grep the diff for secret patterns;
-   - confirm that new test files are actually collected by the test runner, and that skips did not grow.
-
-   **Exit 0 alone is not proof.** Check that tests actually ran.
+   - confirm that the test runner collected the new test files;
+   - prove tests ran with `python3 -I $SKILL/scripts/testcount.py check <report>` on captured pytest JUnit XML, pytest terminal output, or Node test output. Use `--base <base-report>` to reject a drop in collected tests or an increase in skips when a baseline report is available. Use JUnit XML when pytest's quiet output omits collection details.
 4. **Sensitive packages** (money, auth, security): run `opinions.py` with `templates/prompts/code-review.md` on the commit before accepting.
 5. **Accept or reject:**
    - **Accept:** if push is delegated, push to the integration branch and verify the remote SHA. Update `STATE.md`.
