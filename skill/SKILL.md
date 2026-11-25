@@ -59,7 +59,18 @@ It checks Codex, the GitHub CLI login, the Telegram config, `KOROLEV_HOME`, disk
    - remaining disagreements.
 
    Where the two reviewers disagree on something important and you are unsure, it becomes a question.
-7. **Ask the owner.** Write `QUESTIONS.md` with product decisions only, each numbered with lettered options, a recommended default and one line of why. Then:
+7. **Ask the owner.** Write `QUESTIONS.md` using `templates/QUESTIONS.md`. Ask only for product decisions.
+
+   **How to write owner questions**
+
+   - Use everyday words. Leave out ticket IDs, spec section numbers, file names and variable names. If one is essential, explain it in a few words.
+   - Number each question and state what needs deciding in one line. Use the next line to say why it matters to users, money or time.
+   - Use lettered options and say what will actually happen for each one. Put the recommended option first, mark it **Recommended**, and give one line explaining why.
+   - Use concrete numbers and examples. Avoid double negatives. Ask for one decision per question and send at most five questions per message.
+   - End with how to answer all the questions in one reply, for example “Reply to this message with 1a 2b.”
+
+   Send the questions and wait for a reply.
+
    - `python3 -I $SKILL/scripts/notify.py --project <name> --file products/<name>/QUESTIONS.md`, which logs the questions as pending in `DECISIONS.md`;
    - `python3 -I $SKILL/scripts/inbox.py --wait 14400` in the background, so a reply wakes you;
    - if Telegram is not configured, ask in chat instead.

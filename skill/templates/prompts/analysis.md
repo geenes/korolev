@@ -8,6 +8,6 @@ Cover, with file paths as evidence:
 5. Code quality and risks: hot spots, missing tests, security-sensitive areas (money, auth, secrets, personal data), and obvious bugs or dead code.
 6. Gaps: what the specs promise that the code does not do, and what the code does that no spec covers.
 7. Suggested next packages: 5 to 10 small, verifiable units of work, in order, each with acceptance checks.
-8. Questions only the product owner can answer, each with options.
+8. Questions only the product owner can answer, each with options. For this section, phrase them for a non-technical owner (see the plain-language rules in SKILL.md).
 
 At most 200 lines. No preamble. Prefer tables and bullets.
