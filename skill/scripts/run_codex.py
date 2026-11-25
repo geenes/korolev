@@ -8,7 +8,7 @@ Each run is a new ephemeral session: no history, a small context. Read-only role
 cannot change files. --write (or a role with write=true) allows workspace writes
 in the clone only. The final message goes to OUT, relative to the product folder
 unless absolute. Events and usage are kept in the product's .runs/ folder and
-summarized in USAGE.jsonl. Exit code: Codex's own; 124 on timeout.
+summarized in USAGE.jsonl. Exit code: Codex's own; 124 on timeout; 75 if the write lock is busy.
 Run it in the background: the coordinator wakes when it exits.
 """
 import argparse
@@ -18,10 +18,12 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import append_line, display_name, now, product_dir, roles, work_repo  # noqa: E402
+from procs import LockBusyError, run_lock  # noqa: E402
 
 HEADER = """You are the {role} for the project "{display}" in a Korolev-coordinated team.
 Repository (your working directory): {cwd}
@@ -91,6 +93,16 @@ def main():
         sys.exit(f'no product folder {pdir}; run onboard.py init first')
     cwd = Path(args.cwd or work_repo(args.product)).expanduser().resolve()
     write = args.write or role.get('write', False)
+    lock = run_lock(f'{args.product}-{args.role}-write') if write else nullcontext()
+    try:
+        with lock as lock_fd:
+            return run(args, role, pdir, cwd, write, lock_fd)
+    except LockBusyError as error:
+        print(error, file=sys.stderr)
+        return 75
+
+
+def run(args, role, pdir, cwd, write, lock_fd):
     model = args.model or role['model']
     effort = args.effort or role['effort']
     timeout = 60 * (args.timeout or role.get('timeout_minutes', 60))
@@ -118,7 +130,8 @@ def main():
     timed_out = False
     with events.open('w') as sink:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=sink, stderr=subprocess.STDOUT,
-                                text=True, start_new_session=True)
+                                text=True, start_new_session=True,
+                                pass_fds=() if lock_fd is None else (lock_fd,))
         try:
             proc.communicate(prompt, timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -143,8 +156,8 @@ def main():
     if code == 0 and record['out_bytes'] == 0:
         print('WARNING: Codex exited 0 but wrote no deliverable', file=sys.stderr)
         code = 3
-    sys.exit(code)
+    return code
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
