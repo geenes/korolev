@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import tempfile
 import time
 from pathlib import Path
 
@@ -35,6 +36,48 @@ def language():
         return 'en'
     value = config.get('language') if isinstance(config, dict) else None
     return value if value in ('en', 'ru') else 'en'
+
+
+def isolate_codex_home():
+    try:
+        config = json.loads((CONFIG_DIR / 'config.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return True
+    return not isinstance(config, dict) or config.get('isolate_codex_home') is not False
+
+
+def codex_home(*, create=True):
+    """Return the worker's Codex home, preparing it unless only inspecting it."""
+    home = Path(os.environ.get('KOROLEV_CODEX_HOME') or '~/.local/share/korolev/codex-home').expanduser().resolve()
+    if not create:
+        return home
+
+    user_home = Path(os.environ.get('CODEX_HOME') or '~/.codex').expanduser().absolute()
+    real_home = user_home.resolve()
+    if home.is_relative_to(real_home) or real_home.is_relative_to(home):
+        raise OSError('isolated Codex home overlaps the user Codex home')
+
+    home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    home.chmod(0o700)
+    auth = home / 'auth.json'
+    source = user_home / 'auth.json'
+    if auth.exists() and not auth.is_symlink():
+        raise OSError('isolated Codex auth.json already exists as a non-symlink')
+    needs_auth = not auth.is_symlink() or auth.readlink() != source
+    config = home / 'config.toml'
+    minimal_config = b'model_reasoning_summary = "none"\n'
+    needs_config = config.is_symlink() or not config.is_file() or config.read_bytes() != minimal_config
+    if needs_auth or needs_config:
+        # Worker launches can overlap. Publish each file atomically from a private staging directory.
+        with tempfile.TemporaryDirectory(dir=home) as directory:
+            staging = Path(directory)
+            if needs_auth:
+                (staging / auth.name).symlink_to(source)
+                (staging / auth.name).replace(auth)
+            if needs_config:
+                (staging / config.name).write_bytes(minimal_config)
+                (staging / config.name).replace(config)
+    return home
 
 
 def slug(text):

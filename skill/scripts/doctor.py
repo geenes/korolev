@@ -14,7 +14,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import BOT_STATE, HOME, SKILL, TELEGRAM_ENV, roles  # noqa: E402
+from common import BOT_STATE, HOME, SKILL, TELEGRAM_ENV, codex_home, isolate_codex_home, roles  # noqa: E402
 
 results = []
 
@@ -50,6 +50,17 @@ def main():
         report('WARN' if missing else 'PASS', 'codex models', f'not in local cache: {missing}' if missing else 'all role models known')
     else:
         report('WARN', 'codex models', 'no local model cache to check against')
+    isolated = isolate_codex_home()
+    report('PASS', 'codex home isolation', 'on' if isolated else 'off')
+    auth_problem = 'FAIL' if isolated else 'WARN'
+    try:
+        auth = codex_home(create=isolated) / 'auth.json'
+        if auth.is_symlink() and auth.is_file():
+            report('PASS', 'isolated codex auth', 'valid symlink')
+        else:
+            report(auth_problem, 'isolated codex auth', 'missing auth symlink or target')
+    except OSError as error:
+        report(auth_problem, 'isolated codex auth', str(error))
     try:
         HOME.mkdir(parents=True, exist_ok=True)
         probe = HOME / '.write-test'

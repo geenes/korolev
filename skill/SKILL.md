@@ -161,3 +161,4 @@ Korolev is a product too (`korolev`, the repo `geenes/korolev`). It improves thr
 | `sol56` | `gpt-5.6-sol` | xhigh | read-only |
 
 Override with `--model` or `--effort`, or with `~/.config/korolev/config.json`, for example `{"roles": {"builder": {"model": "...", "effort": "high"}}}`.
+Workers use an isolated Codex home (`~/.local/share/korolev/codex-home`, overridable with `KOROLEV_CODEX_HOME`) that links to your Codex auth. Set `"isolate_codex_home": false` in `~/.config/korolev/config.json` to use your usual Codex home.

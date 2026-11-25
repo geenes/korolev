@@ -22,7 +22,8 @@ from contextlib import nullcontext
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import CONFIG_DIR, append_line, display_name, now, product_dir, roles, work_repo  # noqa: E402
+from common import (CONFIG_DIR, append_line, codex_home, display_name, isolate_codex_home,  # noqa: E402
+                    now, product_dir, roles, work_repo)
 from procs import LockBusyError, run_lock  # noqa: E402
 
 HEADER = """You are the {role} for the project "{display}" in a Korolev-coordinated team.
@@ -142,12 +143,17 @@ def run(args, role, pdir, cwd, write, lock_fd):
     cmd = ['codex', 'exec', '-C', str(cwd), '-m', model, '-c', f'model_reasoning_effort={effort}',
            '-s', 'workspace-write' if write else 'read-only', '--ephemeral', '--skip-git-repo-check',
            '--json', '-o', str(out), '-']
+    isolated = isolate_codex_home()
+    try:
+        env = dict(os.environ, CODEX_HOME=str(codex_home())) if isolated else None
+    except OSError as error:
+        sys.exit(f'could not set up isolated Codex home: {error}')
     started = now()
     begin = time.time()
     timed_out = False
     with events.open('w') as sink:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=sink, stderr=subprocess.STDOUT,
-                                text=True, start_new_session=True,
+                                text=True, start_new_session=True, env=env,
                                 pass_fds=() if lock_fd is None else (lock_fd,))
         try:
             proc.communicate(prompt, timeout=timeout)
@@ -165,6 +171,7 @@ def run(args, role, pdir, cwd, write, lock_fd):
         commit = commit_changes(cwd, task, model)
     usage, turns = usage_from(events, include_turns=True)
     record = {'role': args.role, 'product': args.product, 'model': model, 'effort': effort,
+              'codex_home': 'isolated' if isolated else 'user',
               'sandbox': 'workspace-write' if write else 'read-only', 'started': started, 'ended': now(),
               'seconds': round(time.time() - begin), 'exit': code, 'timed_out': timed_out,
               'out': str(out), 'out_bytes': out.stat().st_size if out.exists() else 0,
