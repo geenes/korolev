@@ -17,6 +17,8 @@ PYTEST_COLLECTION_ERRORS = re.compile(r'Interrupted: (\d+) errors? during collec
 NODE_COUNT = re.compile(r'[#ℹ] (tests|pass|fail|cancelled|skipped|todo) (\d+)\s*')
 NODE_TAP_SKIP = re.compile(r'^\s*(?:not )?ok \d+ - (.+?)\s+# (?:SKIP|TODO)(?:\s|$)', re.IGNORECASE)
 NODE_SPEC_SKIP = re.compile(r'^\s*[﹣⚠✔] (.+?) \([\d.]+ms\) #')
+EXIT_CODE = re.compile(r'(?:Error: )?(?:Process completed with )?exit(?:[ _]code| status)'
+                       r'(?:\s*[:=]\s*|\s+)(-?\d+)\.?', re.IGNORECASE)
 
 
 def report(collected=0, passed=0, failed=0, errors=0, skipped=0, skipped_ids=()):
@@ -98,20 +100,38 @@ def parse_node(lines):
                   counts['skipped'] + counts['todo'], skipped_ids)
 
 
-def parse(path):
+def parse(path, *, include_exit_code=False):
     data = path.read_bytes()
     if data.lstrip().startswith((b'<', b'\xef\xbb\xbf<', b'\xff\xfe', b'\xfe\xff')):
         return parse_junit(data)
     lines = ANSI.sub('', data.decode('utf-8-sig', errors='replace')).splitlines()
-    return parse_node(lines) or parse_pytest(lines)
+    result = parse_node(lines) or parse_pytest(lines)
+    if include_exit_code:
+        for line in reversed(lines):
+            if match := EXIT_CODE.fullmatch(line.strip()):
+                result['exit_code'] = int(match[1])
+                break
+    return result
 
 
 def check(args, result):
     collected = result['collected']
+    passed = result['passed']
     skipped = result['skipped']
     reasons = []
     if collected == 0:
         reasons.append('nothing ran (collected 0)')
+    elif passed + result['failed'] == 0:
+        if args.allow_all_skipped and skipped == collected and result['errors'] == 0:
+            print(f'WARNING: all {collected} collected tests were skipped (--allow-all-skipped)',
+                  file=sys.stderr)
+        else:
+            reasons.append('no tests executed (0 passed, 0 failed)')
+    elif passed == 0:
+        reasons.append('no tests passed')
+    exit_code = result.get('exit_code') or args.exit_code
+    if exit_code:
+        reasons.append(f'runner exit code {exit_code}')
     if args.min is not None and collected < args.min:
         reasons.append(f'collected {collected} below minimum {args.min}')
     if args.max_skips is not None and skipped > args.max_skips:
@@ -146,10 +166,14 @@ def main():
     verify.add_argument('--max-skips', type=int, help='maximum skipped count')
     verify.add_argument('--skips-allow', type=Path, help='file with one reported skipped ID per line')
     verify.add_argument('--base', type=Path, help='baseline report for count and skip comparisons')
+    verify.add_argument('--allow-all-skipped', action='store_true',
+                        help='allow a fully skipped run and print a warning')
+    verify.add_argument('--exit-code', type=int,
+                        help='runner exit code (also read from an "exit code: N" report line)')
     args = parser.parse_args()
 
     try:
-        result = parse(args.file)
+        result = parse(args.file, include_exit_code=args.command == 'check')
         if args.command == 'check':
             return check(args, result)
         print(json.dumps(result, ensure_ascii=False))

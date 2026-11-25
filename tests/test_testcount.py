@@ -46,13 +46,15 @@ class TestCountTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), expected)
 
-    def assert_verdict(self, code, *options, report=PYTEST_REPORT, reasons=()):
+    def assert_verdict(self, code, *options, report=PYTEST_REPORT, reasons=(), warning=None):
         result = self.run_script('check', self.fixture('report', report), *options)
         self.assertEqual(result.returncode, code, result.stdout + result.stderr)
         self.assertEqual(len(result.stdout.splitlines()), 1)
         self.assertTrue(result.stdout.startswith('FAIL' if code else 'PASS'), result.stdout)
         for reason in reasons:
             self.assertIn(reason, result.stdout)
+        if warning is not None:
+            self.assertIn(warning, result.stderr)
 
     def test_parse_pytest_junit_xml(self):
         self.assert_parse(JUNIT_REPORT, collected=4, passed=1, failed=1, errors=1,
@@ -96,6 +98,63 @@ not ok 5 - cancelled
                        '# tests 0\n# pass 0\n# fail 0\n# skipped 0\n'):
             with self.subTest(report=report):
                 self.assert_verdict(1, report=report, reasons=('nothing ran',))
+
+    def test_check_rejects_all_skipped_pytest_run(self):
+        self.assert_verdict(1, report='==== 3 skipped in 0.01s ====\n',
+                            reasons=('no tests executed',))
+
+    def test_check_rejects_all_skipped_node_run(self):
+        report = '''TAP version 13
+ok 1 - one # SKIP
+ok 2 - two # SKIP
+ok 3 - three # SKIP
+1..3
+# tests 3
+# suites 0
+# pass 0
+# fail 0
+# cancelled 0
+# skipped 3
+# todo 0
+'''
+        self.assert_verdict(1, report=report, reasons=('no tests executed',))
+
+    def test_check_accepts_one_pass_and_two_skips(self):
+        self.assert_verdict(0, report='1 passed, 2 skipped in 0.01s\n')
+
+    def test_check_accepts_all_skipped_with_warning_when_allowed(self):
+        self.assert_verdict(0, '--allow-all-skipped', report='3 skipped in 0.01s\n',
+                            warning='WARNING: all 3 collected tests were skipped')
+
+    def test_allow_all_skipped_preserves_skip_limit(self):
+        self.assert_verdict(1, '--allow-all-skipped', '--max-skips', '2',
+                            report='3 skipped in 0.01s\n',
+                            reasons=('skipped 3 exceeds maximum 2',))
+
+    def test_allow_all_skipped_rejects_no_collection_and_error_only_runs(self):
+        self.assert_verdict(1, '--allow-all-skipped', report='no tests ran in 0.01s\n',
+                            reasons=('nothing ran',))
+        self.assert_verdict(1, '--allow-all-skipped', report='1 error in 0.01s\n',
+                            reasons=('no tests executed',))
+
+    def test_check_rejects_executed_run_with_no_passes(self):
+        self.assert_verdict(1, '--allow-all-skipped', report='1 failed, 2 skipped in 0.01s\n',
+                            reasons=('no tests passed',))
+
+    def test_check_rejects_nonzero_runner_exit_code(self):
+        self.assert_verdict(1, '--exit-code', '2', report='1 passed in 0.01s\n',
+                            reasons=('runner exit code 2',))
+        self.assert_verdict(1, '--allow-all-skipped', '--exit-code', '2',
+                            report='3 skipped in 0.01s\n', reasons=('runner exit code 2',))
+        self.assert_verdict(0, '--exit-code', '0', report='1 passed in 0.01s\n')
+
+    def test_check_rejects_nonzero_runner_exit_code_in_report(self):
+        for status in ('exit code: 2', 'Error: Process completed with exit code 2.'):
+            with self.subTest(status=status):
+                report = f'1 passed in 0.01s\n{status}\n'
+                self.assert_verdict(1, report=report, reasons=('runner exit code 2',))
+                self.assert_verdict(1, '--exit-code', '0', report=report,
+                                    reasons=('runner exit code 2',))
 
     def test_check_rejects_pytest_collection_failure_without_tests(self):
         report = ('==== ERROR collecting test_api.py ====\n'
