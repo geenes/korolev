@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,11 +21,12 @@ class SandboxTests(unittest.TestCase):
         self.isolated = self.home / '.local' / 'share' / 'korolev' / 'codex-home'
         self.auth = self.home / '.codex' / 'auth.json'
         self.binary_dir = self.home / '.codex' / 'packages' / 'release' / 'bin'
+        self.argv_bin = self.base / 'argv-bin'
         self.config = self.home / '.config' / 'korolev'
         self.secret = self.home / 'secret' / 'hidden.txt'
         self.other_home = self.base / 'other-home'
         for directory in (self.product, self.clone, self.isolated, self.auth.parent,
-                          self.binary_dir, self.config, self.secret.parent, self.other_home):
+                          self.binary_dir, self.argv_bin, self.config, self.secret.parent, self.other_home):
             directory.mkdir(parents=True, exist_ok=True)
         self.auth.write_text('{}')
         (self.isolated / 'auth.json').symlink_to(self.auth)
@@ -32,6 +34,8 @@ class SandboxTests(unittest.TestCase):
         (self.clone / 'visible.txt').write_text('clone')
         (self.clone / '.git').mkdir()
         self.make_executable(self.binary_dir / 'codex', 'exit 0\n')
+        # Supply a stub for tests that inspect the generated arguments.
+        self.make_executable(self.argv_bin / 'bwrap', 'exit 1\n')
         self.env = dict(os.environ, HOME=str(self.home),
                         PATH=os.pathsep.join([str(self.binary_dir), os.defpath]),
                         KOROLEV_HOME=str(self.product.parents[1]), KOROLEV_CONFIG_DIR=str(self.config),
@@ -41,12 +45,34 @@ class SandboxTests(unittest.TestCase):
         path.write_text('#!/bin/sh\n' + body)
         path.chmod(0o700)
 
-    def wrap(self, cmd, *, write=False):
+    def wrap(self, cmd, *, write=False, bwrap_dir=None):
         from skill.scripts import sandbox
 
-        with patch.dict(os.environ, self.env, clear=True):
+        path = os.pathsep.join([str(bwrap_dir or self.argv_bin), self.env['PATH']])
+        with patch.dict(os.environ, dict(self.env, PATH=path), clear=True):
             return sandbox.wrap(cmd, clone=self.clone, product_dir=self.product,
                                 codex_home=self.isolated, write=write)
+
+    def skip_real_bwrap(self, reason):
+        if os.environ.get('KOROLEV_REQUIRE_BWRAP') == '1':
+            self.fail(reason)
+        print(f'SKIP real bubblewrap test: {reason}', file=sys.stderr)
+        self.skipTest(reason)
+
+    def real_bwrap(self):
+        # Check the test runner's PATH directly so the production /usr/bin fallback
+        # cannot pick up the host installation in the no-bwrap run.
+        bwrap = shutil.which('bwrap')
+        if bwrap is None:
+            self.skip_real_bwrap('bwrap is missing from PATH')
+        bwrap = Path(bwrap).absolute()
+        probe = subprocess.run([bwrap, '--ro-bind', '/', '/', '--unshare-pid', '--', '/bin/true'],
+                               env=dict(self.env, LC_ALL='C'), capture_output=True, text=True, timeout=10)
+        permission_errors = ('no permissions to create new namespace', 'operation not permitted', 'permission denied')
+        if probe.returncode != 0 and any(error in probe.stderr.lower() for error in permission_errors):
+            self.skip_real_bwrap(f'namespace probe failed: {probe.stderr.strip()}')
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+        return bwrap
 
     def mounts(self, argv, option):
         return {Path(source): Path(dest) for arg, source, dest in zip(argv, argv[1:], argv[2:])
@@ -97,16 +123,11 @@ class SandboxTests(unittest.TestCase):
         self.assertNotIn(self.secret.parent, mounts)
 
     def test_real_bwrap_hides_secret_and_exposes_clone(self):
-        from skill.scripts import sandbox
-
-        if sandbox.bwrap_path() is None:
-            reason = 'bwrap is missing'
-            print(f'SKIP real bubblewrap test: {reason}', file=sys.stderr)
-            self.skipTest(reason)
+        bwrap = self.real_bwrap()
         argv = self.wrap(['/bin/sh', '-eu', '-c',
                           'test ! -e "$1"; test "$(cat "$2")" = clone; test -r "$3"',
                           'probe', str(self.secret), str(self.clone / 'visible.txt'),
-                          str(self.isolated / 'auth.json')])
+                          str(self.isolated / 'auth.json')], bwrap_dir=bwrap.parent)
         result = subprocess.run(argv, env=self.env, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
 

@@ -26,6 +26,7 @@ class CodexHomeTests(unittest.TestCase):
         self.isolated_home = self.user_home / '.local' / 'share' / 'korolev' / 'codex-home'
         self.config_dir = self.user_home / '.config' / 'korolev'
         self.config_dir.mkdir(parents=True)
+        # Exercise Codex home isolation without requiring a worker namespace.
         (self.config_dir / 'config.json').write_text('{"worker_sandbox": false}\n')
         self.korolev_home = self.base / 'korolev'
         self.product = self.korolev_home / 'products' / 'demo'

@@ -25,9 +25,11 @@ class ResumeTests(unittest.TestCase):
         self.home = self.base / 'home'
         self.product = self.home / 'products' / 'demo'
         self.product.mkdir(parents=True)
-        self.config = self.base / 'config'
-        self.config.mkdir()
-        self.env = dict(os.environ, KOROLEV_HOME=str(self.home), KOROLEV_CONFIG_DIR=str(self.config))
+        config_dir = self.base / 'config'
+        config_dir.mkdir()
+        # Exercise resume and limit handling with a fake Codex and no worker namespace.
+        (config_dir / 'config.json').write_text('{"worker_sandbox": false, "isolate_codex_home": false}\n')
+        self.env = dict(os.environ, KOROLEV_HOME=str(self.home), KOROLEV_CONFIG_DIR=str(config_dir))
         self.clock = NOW
         self.notifications = []
         self.calls = self.base / 'calls.jsonl'
@@ -198,7 +200,6 @@ class ResumeTests(unittest.TestCase):
         codex.write_text(f'#!{sys.executable}\nimport sys\nsys.stdin.read()\n'
                          f'print({output!r}, file=sys.stderr)\nsys.exit({code})\n')
         codex.chmod(0o700)
-        (self.config / 'config.json').write_text('{"worker_sandbox":false,"isolate_codex_home":false}')
         prompt = self.product / 'TASK.md'
         prompt.write_text('# A fake task')
         result = subprocess.run(
@@ -248,7 +249,6 @@ class ResumeTests(unittest.TestCase):
         self.assertIn('systemctl --user enable --now korolev-resume.timer', result.stdout)
 
     def test_doctor_reports_timer_enablement(self):
-        (self.config / 'config.json').write_text('{"worker_sandbox":false,"isolate_codex_home":false}')
         for name in ('codex', 'git'):
             stub = self.base / name
             stub.write_text('#!/bin/sh\nexit 0\n')

@@ -18,7 +18,11 @@ class ProcessLockTests(unittest.TestCase):
     def setUp(self):
         temp = self.enterContext(tempfile.TemporaryDirectory())
         self.home = Path(temp) / 'home'
-        self.env = dict(os.environ, KOROLEV_HOME=str(self.home), KOROLEV_CONFIG_DIR=f'{temp}/config')
+        config_dir = Path(temp) / 'config'
+        config_dir.mkdir()
+        # The launcher test exercises lock handling without starting a sandboxed worker.
+        (config_dir / 'config.json').write_text('{"worker_sandbox": false}\n')
+        self.env = dict(os.environ, KOROLEV_HOME=str(self.home), KOROLEV_CONFIG_DIR=str(config_dir))
         self.enterContext(patch.object(procs, 'HOME', self.home))
 
     def run_script(self, script, *args):

@@ -41,10 +41,12 @@ class RunCodexUsageTests(unittest.TestCase):
         prompt = product / 'TASK.md'
         prompt.write_text('Test task')
         config_dir = self.base / 'config'
-        if config is not None:
-            config_dir.mkdir()
-            (config_dir / 'config.json').write_text(json.dumps(config))
+        config_dir.mkdir(exist_ok=True)
+        # These tests exercise usage reporting through a fake Codex.
+        settings = {**(config or {}), 'worker_sandbox': False}
+        (config_dir / 'config.json').write_text(json.dumps(settings))
         env = dict(os.environ, KOROLEV_HOME=str(home), KOROLEV_CONFIG_DIR=str(config_dir),
+                   CODEX_HOME=str(self.base / 'user-codex-home'),
                    KOROLEV_CODEX_HOME=str(self.base / 'codex-home'), PATH=str(self.base))
         result = subprocess.run([sys.executable, '-I', str(SCRIPTS / 'run_codex.py'),
                                  '--role', 'analyst', '--product', 'demo', '--cwd', str(self.base),
