@@ -30,6 +30,7 @@ class SandboxTests(unittest.TestCase):
         (self.isolated / 'auth.json').symlink_to(self.auth)
         self.secret.write_text('private')
         (self.clone / 'visible.txt').write_text('clone')
+        (self.clone / '.git').mkdir()
         self.make_executable(self.binary_dir / 'codex', 'exit 0\n')
         self.env = dict(os.environ, HOME=str(self.home),
                         PATH=os.pathsep.join([str(self.binary_dir), os.defpath]),
@@ -78,7 +79,10 @@ class SandboxTests(unittest.TestCase):
         self.assertEqual(self.mounts(read_only, '--ro-bind')[self.clone], self.clone)
         self.assertEqual(self.mounts(writable, '--bind')[self.clone], self.clone)
         self.assertNotIn(self.clone, self.mounts(writable, '--ro-bind'))
-        self.assertEqual(self.mounts(read_only, '--bind')[self.product], self.product)
+        self.assertEqual(self.mounts(writable, '--ro-bind')[self.clone / '.git'], self.clone / '.git')
+        for argv in (read_only, writable):
+            self.assertEqual(self.mounts(argv, '--ro-bind').get(self.product), self.product)
+            self.assertNotIn(self.product, self.mounts(argv, '--bind'))
 
     def test_path_only_exposes_toolchain_directories_outside_home(self):
         toolchain = self.base / 'toolchain' / 'bin'
@@ -106,11 +110,11 @@ class SandboxTests(unittest.TestCase):
         result = subprocess.run(argv, env=self.env, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def worker(self, *args):
+    def worker(self, *args, role='analyst'):
         task = self.product / 'TASK.md'
         task.write_text('Test task\n')
         return subprocess.run([sys.executable, '-I', str(SCRIPTS / 'run_codex.py'),
-                               '--role', 'analyst', '--product', 'demo', '--prompt', str(task),
+                               '--role', role, '--product', 'demo', '--prompt', str(task),
                                '--out', 'HANDOFF.md', *args], env=self.env, capture_output=True,
                               text=True, timeout=10)
 
@@ -142,12 +146,86 @@ class SandboxTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn('FAIL worker sandbox: test namespace failure', result.stdout)
 
+    def fake_bwrap(self):
+        argv_log = self.base / 'bwrap-argv.json'
+        path = self.binary_dir / 'bwrap'
+        path.write_text(
+            f'#!{sys.executable}\n'
+            'import json, os, sys\n'
+            'from pathlib import Path\n'
+            'args = sys.argv[1:]\n'
+            'cmd = args[args.index("--") + 1:]\n'
+            'if cmd[0] == "/bin/sh":\n'
+            '    print("sandbox checks passed")\n'
+            'else:\n'
+            f'    Path({str(argv_log)!r}).write_text(json.dumps(args))\n'
+            '    os.execv(cmd[0], cmd)\n'
+        )
+        path.chmod(0o700)
+        return argv_log
+
+    def test_bwrap_worker_moves_deliverable_from_its_outbox(self):
+        argv_log = self.fake_bwrap()
+        self.make_executable(self.binary_dir / 'codex',
+                             'while [ "$1" != -o ]; do shift; done\n'
+                             'test ! -e "$2" && echo deliverable > "$2"\n')
+        self.make_executable(self.binary_dir / 'git', 'exit 1\n')
+        absolute_out = self.base / 'reports' / 'HANDOFF.md'
+        outboxes = set()
+        for role, target in (('analyst', 'HANDOFF.md'), ('builder', str(absolute_out)), ('analyst', 'HANDOFF.md')):
+            with self.subTest(role=role):
+                out = self.product / target
+                out.parent.mkdir(exist_ok=True)
+                out.write_text('previous deliverable')
+                result = self.worker('--out', target, role=role)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                argv = json.loads(argv_log.read_text())
+                cmd = argv[argv.index('--') + 1:]
+                self.assertEqual([cmd[i + 1] for i, arg in enumerate(cmd) if arg == '-s'],
+                                 ['danger-full-access'])
+                deliverable = Path(cmd[cmd.index('-o') + 1])
+                outbox = deliverable.parent
+                self.assertEqual(deliverable.name, 'deliverable.md')
+                self.assertEqual(outbox.parent, self.product / '.runs')
+                self.assertTrue(outbox.name.endswith('-out'))
+                self.assertNotIn(outbox, outboxes)
+                outboxes.add(outbox)
+                self.assertEqual(self.mounts(argv, '--bind').get(outbox), outbox)
+                self.assertEqual(out.read_text(), 'deliverable\n')
+                self.assertFalse(deliverable.exists())
+                record = json.loads(result.stdout)
+                self.assertEqual(record['sandbox'], 'bwrap')
+                self.assertEqual(record['codex_sandbox'], 'danger-full-access (inside bwrap)')
+                self.assertEqual(record['out'], str(out))
+                self.assertEqual(record['out_bytes'], len(b'deliverable\n'))
+
+    def test_bwrap_worker_requires_a_new_nonempty_regular_deliverable(self):
+        self.fake_bwrap()
+        out = self.product / 'HANDOFF.md'
+        out.write_text('previous deliverable')
+        for body in ('exit 0\n', ': > "$2"\n', 'ln -s "$HOME/secret/hidden.txt" "$2"\n'):
+            with self.subTest(body=body):
+                self.make_executable(self.binary_dir / 'codex',
+                                     'while [ "$1" != -o ]; do shift; done\n' + body)
+                result = self.worker()
+                self.assertEqual(result.returncode, 3, result.stderr)
+                self.assertIn('wrote no deliverable', result.stderr)
+                self.assertEqual(out.read_text(), 'previous deliverable')
+                self.assertEqual(json.loads(result.stdout)['out_bytes'], 0)
+
     def test_owner_can_disable_worker_sandbox(self):
         self.make_executable(self.binary_dir / 'bwrap', 'exit 1\n')
         self.make_executable(self.binary_dir / 'codex',
-                             'while [ "$1" != -o ]; do shift; done\necho deliverable > "$2"\n')
+                             'while [ "$1" != -s ]; do shift; done\nmode=$2\n'
+                             'while [ "$1" != -o ]; do shift; done\nprintf "%s\\n" "$mode" "$2" > "$2"\n')
+        self.make_executable(self.binary_dir / 'git', 'exit 1\n')
         (self.config / 'config.json').write_text('{"worker_sandbox": false}')
-        result = self.worker()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)['sandbox'], 'off')
-        self.assertEqual((self.product / 'HANDOFF.md').read_text().strip(), 'deliverable')
+        out = self.product / 'HANDOFF.md'
+        for role, mode in (('analyst', 'read-only'), ('builder', 'workspace-write')):
+            with self.subTest(role=role):
+                result = self.worker(role=role)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                record = json.loads(result.stdout)
+                self.assertEqual(record['sandbox'], 'off')
+                self.assertEqual(record['codex_sandbox'], mode)
+                self.assertEqual(out.read_text().splitlines(), [mode, str(out)])

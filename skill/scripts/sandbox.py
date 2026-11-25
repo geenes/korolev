@@ -51,7 +51,7 @@ def toolchain_dirs(home):
             yield real
 
 
-def wrap(cmd, *, clone, product_dir, codex_home, write):
+def wrap(cmd, *, clone, product_dir, codex_home, write, outbox=None):
     """Return the bwrap argv for a worker, keeping its project paths intact."""
     bwrap = bwrap_path()
     if bwrap is None:
@@ -89,7 +89,14 @@ def wrap(cmd, *, clone, product_dir, codex_home, write):
             mounts[target] = ('--ro-bind', str(target))
 
     mounts[clone] = ('--bind' if write else '--ro-bind', str(clone))
-    mounts[product_dir] = ('--bind', str(product_dir))
+    git_metadata = clone / '.git'
+    # Keep the launcher's Git metadata read-only without binding symlink targets.
+    if write and not git_metadata.is_symlink() and git_metadata.exists():
+        mounts[git_metadata] = ('--ro-bind', str(git_metadata))
+    mounts[product_dir] = ('--ro-bind', str(product_dir))
+    if outbox is not None:
+        outbox = Path(outbox).resolve()
+        mounts[outbox] = ('--bind', str(outbox))
     mounts[Path('/tmp')] = ('--tmpfs',)
     mounts[home] = ('--tmpfs',)
     if persistent_home:
@@ -113,7 +120,8 @@ def wrap(cmd, *, clone, product_dir, codex_home, write):
     return [*argv, '--chdir', str(clone), '--', *cmd]
 
 
-def selftest(*, clone=None, product_dir=None, codex_home=None, write=False, dry_run=False, check_version=True):
+def selftest(*, clone=None, product_dir=None, codex_home=None, write=False, outbox=None,
+             dry_run=False, check_version=True):
     """Check an actual worker layout or a temporary one without real credentials."""
     with tempfile.TemporaryDirectory(dir='/tmp', prefix='korolev-sandbox-') as directory:
         probe = Path(directory)
@@ -159,7 +167,7 @@ def selftest(*, clone=None, product_dir=None, codex_home=None, write=False, dry_
         version_arg = 'yes' if check_version else 'no'
         argv = wrap(['/bin/sh', '-eu', '-c', check, 'sandbox-selftest',
                      str(Path(codex).resolve()), version_arg, *hidden],
-                    clone=clone, product_dir=product_dir, codex_home=codex_home, write=write)
+                    clone=clone, product_dir=product_dir, codex_home=codex_home, write=write, outbox=outbox)
         if dry_run:
             return shlex.join(argv)
         try:

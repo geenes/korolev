@@ -25,6 +25,8 @@ class CodexHomeTests(unittest.TestCase):
         (self.real_home / 'config.toml').write_text('model_reasoning_summary = "auto"\n')
         self.isolated_home = self.user_home / '.local' / 'share' / 'korolev' / 'codex-home'
         self.config_dir = self.user_home / '.config' / 'korolev'
+        self.config_dir.mkdir(parents=True)
+        (self.config_dir / 'config.json').write_text('{"worker_sandbox": false}\n')
         self.korolev_home = self.base / 'korolev'
         self.product = self.korolev_home / 'products' / 'demo'
         self.product.mkdir(parents=True)
@@ -70,8 +72,7 @@ class CodexHomeTests(unittest.TestCase):
         self.assertEqual(json.loads((self.product / 'USAGE.jsonl').read_text().splitlines()[-1]), record)
 
     def disable_isolation(self):
-        self.config_dir.mkdir(parents=True)
-        (self.config_dir / 'config.json').write_text('{"isolate_codex_home": false}\n')
+        (self.config_dir / 'config.json').write_text('{"worker_sandbox": false, "isolate_codex_home": false}\n')
 
     def test_worker_is_isolated_by_default(self):
         self.assert_worker_home(self.isolated_home, 'isolated')

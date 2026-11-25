@@ -13,11 +13,15 @@ lock is busy or a usage limit is hit; 78 if the worker sandbox fails preflight.
 Run it in the background: the coordinator wakes when it exits.
 """
 import argparse
+import errno
 import json
 import os
+import shutil
 import signal
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from contextlib import nullcontext
 from pathlib import Path
@@ -138,6 +142,28 @@ def commit_changes(cwd, task, model):
     return git('rev-parse', 'HEAD').stdout.strip()
 
 
+def move_deliverable(deliverable, out):
+    """Publish a nonempty worker file without following links out of its sandbox."""
+    try:
+        info = deliverable.lstat()
+    except FileNotFoundError:
+        return 0
+    if not stat.S_ISREG(info.st_mode) or not info.st_size:
+        return 0
+    try:
+        deliverable.replace(out)
+    except OSError as error:
+        if error.errno != errno.EXDEV:
+            raise
+        # Stage on the destination filesystem so publication is still a rename.
+        with tempfile.TemporaryDirectory(dir=out.parent) as directory:
+            staged = Path(directory) / deliverable.name
+            shutil.copy(deliverable, staged)
+            staged.replace(out)
+        deliverable.unlink()
+    return info.st_size
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--role', required=True)
@@ -178,7 +204,6 @@ def run(args, role, pdir, cwd, write, lock_fd):
     runs = pdir / '.runs'
     runs.mkdir(exist_ok=True)
     stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + f'-{args.role}'
-    events = runs / f'{stamp}.events.jsonl'
 
     task = Path(args.prompt).expanduser().read_text()
     if args.context:
@@ -189,30 +214,38 @@ def run(args, role, pdir, cwd, write, lock_fd):
                                        'the Korolev launcher commits them after you exit.' if write
                                        else 'READ-ONLY: do not modify any file.')) + task
 
+    sandboxed = sandbox.enabled()
+    codex_mode = 'workspace-write' if write else 'read-only'
+    if sandboxed:
+        codex_mode = 'danger-full-access'
     cmd = ['codex', 'exec', '-C', str(cwd), '-m', model, '-c', f'model_reasoning_effort={effort}',
-           '-s', 'workspace-write' if write else 'read-only', '--ephemeral', '--skip-git-repo-check',
-           '--json', '-o', str(out), '-']
+           '-s', codex_mode, '--ephemeral', '--skip-git-repo-check', '--json']
     isolated = isolate_codex_home()
     try:
         worker_home = codex_home() if isolated else None
     except OSError as error:
         sys.exit(f'could not set up isolated Codex home: {error}')
     env = dict(os.environ, CODEX_HOME=str(worker_home)) if isolated else None
-    sandbox_mode = 'off'
-    if sandbox.enabled():
+    deliverable = out
+    if sandboxed:
         repo = work_repo(args.product).resolve()
         try:
             clone = repo if repo.is_dir() else cwd
             if not cwd.is_relative_to(clone):
                 raise OSError(f'working directory is outside the project clone: {cwd}')
-            layout = dict(clone=clone, product_dir=pdir, codex_home=worker_home, write=write)
+            outbox = Path(tempfile.mkdtemp(prefix=f'{stamp}-', suffix='-out', dir=runs))
+            stamp = outbox.name.removesuffix('-out')
+            deliverable = outbox / 'deliverable.md'
+            layout = dict(clone=clone, product_dir=pdir, codex_home=worker_home, write=write, outbox=outbox)
             # Check the actual mount layout without invoking the worker CLI twice.
             sandbox.selftest(**layout, check_version=False)
-            cmd = sandbox.wrap(cmd, **layout)
+            cmd = sandbox.wrap([*cmd, '-o', str(deliverable), '-'], **layout)
         except OSError as error:
             print(f'Worker sandbox failed: {error}\n{sandbox.disable_hint()}', file=sys.stderr)
             return 78
-        sandbox_mode = 'bwrap'
+    else:
+        cmd += ['-o', str(out), '-']
+    events = runs / f'{stamp}.events.jsonl'
     started = now()
     begin = time.time()
     timed_out = False
@@ -234,15 +267,21 @@ def run(args, role, pdir, cwd, write, lock_fd):
     limit_hit, retry_after = event_limit(events)
     if limit_hit:
         code = 75
+    if sandboxed:
+        out_bytes = move_deliverable(deliverable, out)
     commit = None
     if write and code == 0:
         commit = commit_changes(cwd, task, model)
     usage, turns, commands_run = read_event_stats(events)
+    if not sandboxed:
+        out_bytes = out.stat().st_size if out.exists() else 0
     record = {'role': args.role, 'product': args.product, 'model': model, 'effort': effort,
               'codex_home': 'isolated' if isolated else 'user',
-              'sandbox': sandbox_mode, 'started': started, 'ended': now(),
+              'sandbox': 'bwrap' if sandboxed else 'off',
+              'codex_sandbox': f'{codex_mode} (inside bwrap)' if sandboxed else codex_mode,
+              'started': started, 'ended': now(),
               'seconds': round(time.time() - begin), 'exit': code, 'timed_out': timed_out,
-              'out': str(out), 'out_bytes': out.stat().st_size if out.exists() else 0,
+              'out': str(out), 'out_bytes': out_bytes,
               'events': str(events), 'usage': usage, 'commit': commit,
               'uncached_input_tokens': None, 'commands_run': commands_run}
     if limit_hit:
