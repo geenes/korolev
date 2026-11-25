@@ -17,7 +17,8 @@ All paths below are relative to this skill's directory (`$SKILL`). Resolve it fi
 4. **The original repo is read-only.** Work happens in Korolev's own clone at `$KOROLEV_HOME/work/<name>/repo`. Never write into a user's checkout.
 5. **Secrets:** never print tokens or put them in prompts, files or Telegram. Credentials are referenced only by path.
 6. **Authority:** push, merge to main, deploy and anything outward-facing need either the owner's explicit OK in chat or a delegation recorded in `DECISIONS.md`. Real-money operations stay with the owner unless `DECISIONS.md` says otherwise.
-7. **Telegram:**
+7. **Answer the owner.** After acting on an owner message (Telegram or chat), reply with what you are doing; never leave a reply unanswered.
+8. **Telegram:**
    - use only the Korolev bot configured in `~/.config/korolev/telegram.env`;
    - never call `getUpdates` on any other bot, since the owner may use it elsewhere;
    - only `inbox.py` reads the bot, and it holds a lock, so only one reader ever runs.
@@ -118,8 +119,14 @@ Korolev is a product too (`korolev`, the repo `geenes/korolev`). It improves thr
    `python3 -I $SKILL/scripts/lesson.py propose`
 
    This sends numbered proposals to the owner under "Korolev". Answers arrive in the inbox under project `korolev`. Record each answer with `lesson.py resolve <id> approved|rejected`.
-3. **Apply approved lessons** in Korolev's own clone (`onboard.py init https://github.com/geenes/korolev --name korolev`, once). Use the normal build loop: TASK, then builder, then verify. Run the tests (`python3 -m unittest discover -s tests`) and push to `main` when CI is green (Korolev's own main is pre-approved for approved lessons). Then mark the lesson `applied`.
-4. **Hard limits:**
+3. **Apply approved lessons** in Korolev's own clone (`onboard.py init https://github.com/geenes/korolev --name korolev`, once). Use the normal build loop: TASK, then builder, then verify. Run the tests (`python3 -m unittest discover -s tests`), then mark the lesson `applied`. **Commits stay local.**
+4. **Publishing a new version needs the owner's approval every time, and it is maintainer-only:**
+   - `release.py propose` runs `privacy_scan.py` on every outgoing commit. The scan blocks personal emails, home paths, secrets and the private terms in `~/.config/korolev/privacy.json`, and reports its findings redacted. If the scan is clean, it sends the owner the changes (what was added, changed and fixed, plus commits and files) and the privacy result on Telegram.
+   - When the owner replies, `release.py approve` records "a" (approved) or "b" (rejected).
+   - `release.py publish` runs only if all of these hold: the owner approved this exact commit and these exact notes; the privacy scan is still clean, including on the release commit and tag; and the tests pass. Then it pushes, waits for CI and creates the GitHub Release. Then it tells the owner.
+   - Only the maintainer can do this: the upstream origin, a maintainer GitHub login and a local `~/.config/korolev/maintainer.json` are all required. Other Korolev users improve their copy locally and contribute by pull request.
+   - Never push Korolev changes any other way.
+5. **Hard limits:**
    - Changes to the golden rules, authority, secrets handling or Telegram reading (`--safety`) are never applied without the owner's explicit "a".
    - Never weaken a check to make a lesson pass.
    - One lesson per package, so each can be reverted alone.

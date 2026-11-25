@@ -148,6 +148,65 @@ class ReleaseTests(Sandbox):
         self.assertEqual(out, '0.1.10 0.2.0 2.0.0')
 
 
+class PrivacyTests(Sandbox):
+    def repo_with(self, content, email='12345+someone@users.noreply.github.com', message='change'):
+        repo = self.base / 'r'
+        repo.mkdir(exist_ok=True)
+        if not (repo / '.git').exists():
+            subprocess.run(['git', 'init', '-q', '-b', 'main'], cwd=repo, check=True)
+            (repo / 'a.txt').write_text('base\n')
+            subprocess.run(['git', 'add', '.'], cwd=repo, check=True)
+            subprocess.run(['git', '-c', 'user.name=x', '-c', f'user.email={email}', 'commit', '-qm', 'base'], cwd=repo, check=True)
+        (repo / 'b.txt').write_text(content)
+        subprocess.run(['git', 'add', '.'], cwd=repo, check=True)
+        subprocess.run(['git', '-c', 'user.name=x', '-c', f'user.email={email}', 'commit', '-qm', message], cwd=repo, check=True)
+        return repo
+
+    def scan(self, repo):
+        return self.run_script('privacy_scan.py', '--repo', str(repo), '--range', 'HEAD~1..HEAD', '--json', check=False)
+
+    def test_clean_change_passes(self):
+        result = self.scan(self.repo_with('hello world\n'))
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_blocks_personal_email_path_secret_and_private_term(self):
+        config = self.base / 'config'
+        config.mkdir(exist_ok=True)
+        (config / 'privacy.json').write_text(json.dumps({'deny': ['projectx']}))
+        fake_email = 'jane.doe' + '@' + 'gmail' + '.com'  # built from parts so this file passes the scan itself
+        fake_home = '/' + 'home' + '/alice/work/file'
+        cases = ['contact me at ' + fake_email + '\n', 'see ' + fake_home + '\n',
+                 'token = "' + 'ghp_' + 'A' * 36 + '"\n', 'notes about ProjectX launch\n']
+        for content in cases:
+            with self.subTest(content=content[:20]):
+                self.tmp.cleanup(); self.setUp(); config = self.base / 'config'; config.mkdir()
+                (config / 'privacy.json').write_text(json.dumps({'deny': ['projectx']}))
+                result = self.scan(self.repo_with(content))
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertNotIn(fake_email, result.stdout)  # findings are redacted
+
+    def test_blocks_personal_commit_email(self):
+        result = self.scan(self.repo_with('fine\n', email='real.person' + '@' + 'gmail' + '.com'))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('author', result.stdout)
+
+    def test_publish_is_maintainer_only(self):
+        result = self.run_script('release.py', 'publish', '--repo', str(self.base), check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('maintainer-only', result.stderr)
+
+    def test_publish_refuses_without_approval(self):
+        self.env['KOROLEV_TEST_SKIP_MAINTAINER'] = '1'
+        result = self.run_script('release.py', 'publish', '--repo', str(self.base), check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('no release proposal', result.stderr)
+        state = self.base / 'home' / 'products' / 'korolev'
+        state.mkdir(parents=True, exist_ok=True)
+        (state / 'release-pending.json').write_text(json.dumps({'status': 'waiting', 'message_id': 1}))
+        result = self.run_script('release.py', 'publish', '--repo', str(self.base), check=False)
+        self.assertIn('not approved', result.stderr)
+
+
 class RoleTests(Sandbox):
     def test_config_overrides_roles(self):
         config = self.base / 'config'
