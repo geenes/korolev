@@ -30,8 +30,17 @@ Write owner-facing text in the language set by `language` in `~/.config/korolev/
 ## Session discipline
 
 - Start a fresh coordinator session for each milestone and whenever the chat gets long. Launch it from `~/korolev` (or your configured `KOROLEV_HOME`) to keep unrelated product instructions and assistant memory out of the session.
+- When work starts, run `python3 -I $SKILL/scripts/heartbeat.py set --product NAME --status working --doing "short task description"`. Update it as work changes. Use `--status idle` when finished or stopping for the owner. Keep the description free of secrets and private details because it can appear on Telegram.
 - Before ending the session, draft short Markdown notes with the next action and a `### Suggested skills` section near the top. Reference specs, plans, decisions, commits and verification by path, URL or revision. Omit secrets and mark claims without evidence as **unverified**. Write the handoff with `python3 -I $SKILL/scripts/handoff.py --product NAME --file NOTES.md`.
 - To resume, read only the product's `STATE.md` (including `## Session handoff`), `DECISIONS.md`, and `python3 -I $SKILL/scripts/inbox.py --show --project NAME` output. Open referenced files as the next action requires them.
+
+## Unattended resume
+
+- Unattended resume is off by default. On Linux, install the user units with `./install.sh --with-resume` and enable the timer with `systemctl --user daemon-reload` followed by `systemctl --user enable --now korolev-resume.timer`. For a custom `KOROLEV_HOME`, `KOROLEV_CONFIG_DIR`, or `PATH`, set the matching `Environment=` values in a `systemctl --user edit korolev-resume.service` override.
+- With the timer enabled, start interactive Korolev sessions with `python3 -I $SKILL/scripts/heartbeat.py run` so they hold the same coordinator lock as an unattended session. Exit Claude when stopped by a usage limit so the watcher can take over. The timer checks every five minutes and probes Claude only for pending work whose heartbeat is older than 20 minutes. Set `KOROLEV_RESUME_STALE_MINUTES` in the service environment to override that age.
+- When a Codex run exits 75 with `limit_hit: true`, write the handoff, set the heartbeat to `waiting_limit`, and stop. Pass the run record's `retry_after` with `--retry-after` when present. The fallback is 30 minutes. Exit 75 without `limit_hit` means the write lock was busy.
+- A resumed session may continue approved build packages, verify changes, write the handoff, and ask questions on Telegram. Leave pushes, publishing, deployments, spending, and deletions to the owner. Before stopping for the owner, write the handoff, mark the heartbeat idle, and exit.
+- The headless Claude session uses `dontAsk` mode, a limited tool list, disabled hooks, and no configured MCP servers. Its explicit permissions cover the selected product's state files, specific Korolev scripts, and local verification commands. Use an approved Codex worker for project-specific verification outside those commands. Claude starts from `KOROLEV_HOME` with a fresh session ID and sends a plain Telegram notice after launch.
 
 ## Phase 0: preflight (every new machine or session)
 

@@ -1,0 +1,9 @@
+[Unit]
+Description=Check unattended Korolev resume every five minutes
+
+[Timer]
+OnStartupSec=5min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

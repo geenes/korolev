@@ -45,6 +45,7 @@ Korolev came out of one long day running two linked production projects with AI 
 ```bash
 git clone https://github.com/geenes/korolev && cd korolev
 ./install.sh                     # once per machine: links the skill for Claude Code and Codex, runs the preflight check
+# optional on Linux: ./install.sh --with-resume installs an opt-in user timer for unattended resume
 # optional, a Telegram owner channel with your own dedicated bot from @BotFather:
 echo "<bot token>" | python3 skill/scripts/setup_telegram.py   # then send /start to your bot
 ```

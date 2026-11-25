@@ -9,7 +9,7 @@ cannot change files. --write (or a role with write=true) allows workspace writes
 in the clone only. The final message goes to OUT, relative to the product folder
 unless absolute. Events and usage are kept in the product's .runs/ folder and
 summarized in USAGE.jsonl. Exit code: Codex's own; 124 on timeout; 75 if the write
-lock is busy; 78 if the worker sandbox fails preflight.
+lock is busy or a usage limit is hit; 78 if the worker sandbox fails preflight.
 Run it in the background: the coordinator wakes when it exits.
 """
 import argparse
@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (CONFIG_DIR, append_line, codex_home, display_name, isolate_codex_home,  # noqa: E402
                     now, product_dir, roles, work_repo)
 from procs import LockBusyError, run_lock  # noqa: E402
+from resume_watch import limit_details  # noqa: E402
 import sandbox  # noqa: E402
 
 HEADER = """You are the {role} for the project "{display}" in a Korolev-coordinated team.
@@ -80,6 +81,32 @@ def read_event_stats(events_path):
     except OSError:
         pass
     return total or None, turns, commands_run
+
+
+def event_limit(events_path):
+    """Check Codex errors and raw diagnostics, excluding task-generated event text."""
+    hit = False
+    checked_at = time.time()
+    with events_path.open(encoding='utf-8', errors='replace') as stream:
+        for line in stream:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                diagnostic = line
+            else:
+                if not isinstance(event, dict):
+                    continue
+                if event.get('type') in ('error', 'turn.failed'):
+                    diagnostic = line
+                elif isinstance(item := event.get('item'), dict) and item.get('type') == 'error':
+                    diagnostic = json.dumps(item)
+                else:
+                    continue
+            limited, retry = limit_details(diagnostic, checked_at)
+            if retry is not None:
+                return True, retry
+            hit |= limited
+    return hit, None
 
 
 def warning_thresholds():
@@ -204,6 +231,9 @@ def run(args, role, pdir, cwd, write, lock_fd):
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait()
     code = 124 if timed_out else proc.returncode
+    limit_hit, retry_after = event_limit(events)
+    if limit_hit:
+        code = 75
     commit = None
     if write and code == 0:
         commit = commit_changes(cwd, task, model)
@@ -215,6 +245,10 @@ def run(args, role, pdir, cwd, write, lock_fd):
               'out': str(out), 'out_bytes': out.stat().st_size if out.exists() else 0,
               'events': str(events), 'usage': usage, 'commit': commit,
               'uncached_input_tokens': None, 'commands_run': commands_run}
+    if limit_hit:
+        record['limit_hit'] = True
+        if retry_after is not None:
+            record['retry_after'] = retry_after
     input_tokens = (usage or {}).get('input_tokens')
     if input_tokens is not None:
         uncached_input_tokens = input_tokens - usage.get('cached_input_tokens', 0)

@@ -83,6 +83,15 @@ def main():
         path = Path(link).expanduser()
         report('PASS' if path.exists() and path.resolve() == SKILL else 'WARN', f'skill installed at {link}',
                'ok' if path.exists() else 'missing: run install.sh')
+    enabled, state = cmd_ok(['systemctl', '--user', 'is-enabled', 'korolev-resume.timer'])
+    state = state[0] if state else ''
+    if enabled and state in ('enabled', 'enabled-runtime'):
+        report('PASS', 'resume timer', 'enabled')
+    elif (state in ('disabled', 'not-found', 'masked', 'masked-runtime', 'linked', 'linked-runtime', 'static')
+          or state.endswith(': No such file or directory')):
+        report('WARN', 'resume timer', 'disabled')
+    else:
+        report('WARN', 'resume timer', 'status unavailable')
     if not TELEGRAM_ENV.exists():
         report('WARN', 'telegram', f'{TELEGRAM_ENV} missing: questions go to chat only (setup_telegram.py)')
     else:

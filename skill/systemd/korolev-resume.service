@@ -1,0 +1,11 @@
+[Unit]
+Description=Check whether Korolev can resume unattended
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I "%h/.claude/skills/korolev/scripts/resume_watch.py"
+Environment="PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin"
+UMask=0077
+TimeoutStartSec=60
+# The detached coordinator must survive the one-shot check.
+KillMode=process
