@@ -142,6 +142,12 @@ class LessonTests(Sandbox):
         self.assertIn('MCP servers', inv)
 
 
+class ReleaseTests(Sandbox):
+    def test_version_bump(self):
+        out = self.py("from release import bump\nprint(bump('0.1.9','patch'), bump('0.1.9','minor'), bump('1.2.3','major'))")
+        self.assertEqual(out, '0.1.10 0.2.0 2.0.0')
+
+
 class RoleTests(Sandbox):
     def test_config_overrides_roles(self):
         config = self.base / 'config'

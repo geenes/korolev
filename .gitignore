@@ -6,3 +6,5 @@ __pycache__/
 products/*/packages/*/events.jsonl
 reviews/*events.jsonl
 reviews/*.stderr
+RELEASE-NOTES.draft.md
+.release-notes.tmp

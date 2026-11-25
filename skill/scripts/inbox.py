@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -38,8 +39,30 @@ def call(token, method, params, timeout=70):
     try:
         return json.load(urllib.request.urlopen('https://api.telegram.org/bot' + token + '/' + method,
                                                 data=data, timeout=timeout))
+    except urllib.error.HTTPError as error:  # Telegram explains rejections in the JSON body
+        try:
+            return json.load(error)
+        except ValueError:
+            raise SystemExit(f'telegram {method} failed: HTTP {error.code}') from None
     except Exception as error:  # never echo the URL: it contains the token
         raise SystemExit(f'telegram {method} failed: {type(error).__name__}') from None
+
+
+def acknowledge(token, chat, message_id, text):
+    """Send the receipt; check Telegram's answer, retry once, never fail silently. Returns True if delivered."""
+    for params in ({'chat_id': chat, 'reply_to_message_id': message_id, 'text': text}, {'chat_id': chat, 'text': text}):
+        for attempt in range(2):
+            try:
+                result = call(token, 'sendMessage', params, timeout=20)
+            except SystemExit as error:
+                result = {'ok': False, 'description': str(error)}
+            if result.get('ok'):
+                return True
+            retry = (result.get('parameters') or {}).get('retry_after', 2)
+            time.sleep(min(int(retry), 10))
+    print(f'WARNING: receipt for message {message_id} was NOT delivered: {result.get("description", "unknown")}',
+          file=sys.stderr)
+    return False
 
 
 def known_projects():
@@ -117,13 +140,12 @@ def main():
                 record = {'update_id': update['update_id'], 'date': message['date'], 'text': text,
                           'message_id': message['message_id'], 'reply_to': reply_to,
                           'project': project_for(reply_to, text)}
+                note = (f'Проект: {display_name(record["project"])}. ' if record['project']
+                        else 'Проект не определён: ответьте реплаем на вопрос или начните с «проект: …». ')
+                record['ack'] = acknowledge(token, chat, message['message_id'], 'Принято ✓ ' + note + 'Передал Claude.')
                 append_line(INBOX, record)
                 seen.add(update['update_id'])
                 accepted.append(record)
-                note = (f'Проект: {display_name(record["project"])}. ' if record['project']
-                        else 'Проект не определён: ответьте реплаем на вопрос или начните с «проект: …». ')
-                call(token, 'sendMessage', {'chat_id': chat, 'reply_to_message_id': message['message_id'],
-                                            'text': 'Принято ✓ ' + note + 'Передал Claude.'})
             offset = max(offset, update['update_id'] + 1)
         if updates:
             write_atomic(OFFSET, str(offset))
