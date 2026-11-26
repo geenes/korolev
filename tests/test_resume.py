@@ -1,6 +1,7 @@
 """Offline coverage for the unattended resume flow."""
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -262,3 +263,32 @@ class ResumeTests(unittest.TestCase):
                 result = subprocess.run([sys.executable, '-I', str(SCRIPTS / 'doctor.py'), '--offline'],
                                         env=env, capture_output=True, text=True, check=True, timeout=10)
                 self.assertIn(f'{level} resume timer: {state}', result.stdout)
+
+    def test_resume_denies_credential_paths_and_preserves_allow_rules(self):
+        from resume_watch import resume_command
+
+        user_home = self.base / 'user'
+        with patch.dict(os.environ, {'HOME': str(user_home), 'KOROLEV_HOME': str(self.home)}):
+            command = resume_command(('claude',), 'demo', 'test-session')
+        permissions = json.loads(command[command.index('--settings') + 1])['permissions']
+
+        paths = [f'/{user_home}/.config/korolev/**', f'/{user_home}/.ssh/**',
+                 f'/{user_home}/.codex/auth.json', f'/{user_home}/.gemini/**', '**/*.env']
+        self.assertCountEqual(permissions['deny'], [f'{tool}({path})' for path in paths
+                                                   for tool in ('Read', 'Glob', 'Grep', 'Write', 'Edit')])
+        scripts = [
+            ('inbox', '--show --project demo'),
+            ('heartbeat', 'set --product demo *'),
+            ('handoff', '--product demo --file products/demo/*'),
+            ('notify', '--project demo *'),
+            ('run_codex', '--role builder --product demo *'),
+            ('run_codex', '--role analyst --product demo *'),
+            ('procs', 'status *'),
+            ('testcount', 'check *'),
+        ]
+        self.assertEqual(permissions['allow'], [
+            'Skill(korolev)', 'Write(./products/demo/**)', 'Edit(./products/demo/**)',
+            *(f'Bash(python3 -I {shlex.quote(str(SCRIPTS / (script + ".py")))} {args})' for script, args in scripts),
+            'Bash(python3 -m unittest discover -s tests)',
+            *(f'Bash(git -C work/demo/repo {cmd} *)' for cmd in ('status', 'log', 'show', 'diff', 'rev-parse')),
+        ])

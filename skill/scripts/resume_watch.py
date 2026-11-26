@@ -141,8 +141,13 @@ def resume_command(claude, product, session):
     ]
     repo = shlex.quote(f'work/{product}/repo')
     shell.extend(f'git -C {repo} {cmd} *' for cmd in ('status', 'log', 'show', 'diff', 'rev-parse'))
+    home = Path.home()
+    # Claude Code permission patterns use // for absolute paths.
+    credentials = [f'/{home / path}' for path in ('.config/korolev/**', '.ssh/**', '.codex/auth.json', '.gemini/**')]
+    credentials.append('**/*.env')
+    deny = [f'{tool}({path})' for tool in ('Read', 'Glob', 'Grep', 'Write', 'Edit') for path in credentials]
     settings = json.dumps({'disableAllHooks': True,
-                           'permissions': {'allow': allow + [f'Bash({rule})' for rule in shell]}})
+                           'permissions': {'allow': allow + [f'Bash({rule})' for rule in shell], 'deny': deny}})
     return [*claude, '-p', prompt, '--session-id', session, '--permission-mode', 'dontAsk',
             '--setting-sources', '', '--strict-mcp-config', '--settings', settings,
             '--tools', 'Bash,Read,Write,Edit,Glob,Grep,Skill']

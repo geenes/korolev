@@ -278,5 +278,22 @@ class ReleaseTitleTests(Sandbox):
         self.assertIn(f'lesson.py retitle {lesson_id}', output)
 
 
+class SkillGuidanceTests(unittest.TestCase):
+    def test_golden_rules_require_the_codex_runner(self):
+        skill = (ROOT / 'skill' / 'SKILL.md').read_text(encoding='utf-8')
+        rules = skill.split('## Golden rules\n', 1)[1].split('\n## ', 1)[0]
+        self.assertIn('Start every Codex job through `run_codex.py`', rules)
+        self.assertIn('passes the prompt on stdin, closes it, and applies the timeout, sandbox and usage log', rules)
+        self.assertIn('Never run a bare `codex exec`', rules)
+
+    def test_owner_questions_reserve_letters_for_answer_options(self):
+        skill = (ROOT / 'skill' / 'SKILL.md').read_text(encoding='utf-8')
+        checklist = skill.split('**How to write owner questions**', 1)[1].split('Send the questions', 1)[0]
+        self.assertIn('Label answer options with letters only', checklist)
+        self.assertIn('Describe items inside the question in words', checklist)
+        self.assertIn('Reserve those letters for answer options', checklist)
+        self.assertIn('For a single approval, prefer a yes/no question', checklist)
+
+
 if __name__ == '__main__':
     unittest.main()

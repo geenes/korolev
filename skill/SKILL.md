@@ -26,6 +26,7 @@ Write owner-facing text in the language set by `language` in `~/.config/korolev/
    - only `inbox.py` reads the bot, and it holds a lock, so only one reader ever runs.
 9. **Check whether a run is busy or free** only with `procs.py` or its lock. Never use `pgrep -f` or `ps | grep`.
 10. **Worker sandbox:** run workers in bubblewrap by default. Never disable it without the owner's decision.
+11. Start every Codex job through `run_codex.py` (it passes the prompt on stdin, closes it, and applies the timeout, sandbox and usage log). Never run a bare `codex exec` because an open stdin can make it wait forever.
 
 ## Session discipline
 
@@ -81,7 +82,8 @@ It checks Codex, the GitHub CLI login, the Telegram config, `KOROLEV_HOME`, disk
 
    - Use everyday words. Leave out ticket IDs, spec section numbers, file names and variable names. If one is essential, explain it in a few words.
    - Number each question and state what needs deciding in one line. Use the next line to say why it matters to users, money or time.
-   - Use lettered options and say what will actually happen for each one. Put the recommended option first, mark it **Recommended**, and give one line explaining why.
+   - Label answer options with letters only. Describe items inside the question in words. Reserve those letters for answer options.
+   - For a single approval, prefer a yes/no question. When giving options, say what will actually happen for each one. Put the recommended option first, mark it **Recommended**, and give one line explaining why.
    - Use concrete numbers and examples. Avoid double negatives. Ask for one decision per question and send at most five questions per message.
    - End with how to answer all the questions in one reply, for example “Reply to this message with 1a 2b.”
 
