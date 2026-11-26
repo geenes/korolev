@@ -2,6 +2,58 @@
 
 All notable changes to Korolev.
 
+## v0.3.2 (2026-11-26)
+
+v0.3.2 is the first published release of the v0.3 line. The v0.3.0 and v0.3.1 tags exist but were never released: each failed CI on GitHub's test machine for a test-setup reason, and the release step stopped as designed. This version contains everything below.
+
+### Added
+- **English by default, with a language setting** (L-20261125-15)
+  - Why: Korolev's own messages were hard-coded in Russian; most users expect English and some want another language
+- **Questions written so anyone can answer them** (L-20261125-16)
+  - Why: Questions used internal codes, file names and technical terms that most people would not understand
+- **Korolev picks up where it left off when your usage limit resets** (L-20261125-19)
+  - Why: When your Claude usage limit is reached, work stops mid-way and nothing restarts it until you come back
+
+### Changed
+- **Workers run with their own clean Codex setup** (L-20261125-10)
+  - Why: Every worker inherited the global Codex setup (unrelated skills, plugins and shared instructions), adding about 3,700 tokens to every model call and exposing other projects' tools
+- **Shorter coordinator memory with a written handoff** (L-20261125-12)
+  - Why: A single long coordinator chat grew very large and re-reads its whole history every turn, the same waste as long worker chats
+- **Tracking what tokens actually cost** (L-20261125-13)
+  - Why: Run totals of 0.4M-1M input tokens are mostly cached prompt, which is much cheaper; the totals hide what actually costs money and what bloats
+
+### Fixed
+- **Workers can't see other projects or secrets** (L-20261125-11, safety rule)
+  - Why: Codex's read-only sandbox still lets a worker read the whole disk: other projects, Korolev's Telegram credentials and SSH keys
+- **Releases no longer stall on duplicate CI runs** (L-20261125-14)
+  - Why: Pushing main and the version tag together started CI twice for one commit, and the release stopped instead of guessing which run to trust
+- **Release notes describe features in plain words** (L-20261125-17)
+  - Why: Release notes used each lesson's problem title, so a fix appeared as a feature named after the problem
+- **Codex jobs can no longer hang waiting for input** (L-20261125-20)
+  - Why: two research jobs started the wrong way waited for input forever and produced nothing
+- **Test checks now fail when every test was skipped** (L-20261125-22)
+  - Why: an independent review showed a run where all tests were skipped still passed the check
+- **Workers run commands normally inside the sandbox** (L-20261125-23, safety rule)
+  - Why: Codex's own sandbox cannot start inside Korolev's, so workers could not run commands; Korolev's sandbox now does the job alone, and the coordinator tests it end to end
+- **Resumed sessions can read credential files** (L-20261125-24)
+  - Why: The unattended resume session restricts shell commands and writes, but its Read, Glob and Grep tools can still open files such as the Telegram credentials
+  - What changed: Add deny rules for credential paths (~/.config/korolev/**, ~/.ssh/**, *.env) to the resume session settings, with a test
+  - Warning: no change title. Set one with `lesson.py retitle L-20261125-24 --change "…"`.
+- **Tests pass the same way on any machine, and CI runs the real sandbox tests** (L-20261125-26)
+  - Why: 16 tests drove the launcher with a fake Codex while the worker sandbox (on by default) needed bubblewrap; this machine has it, GitHub's runner does not, so v0.3.0 failed CI and was not released
+- **Questions never reuse labels between items and answer options** (L-20261125-27)
+  - Why: Question 5 named two fixes 5a and 5b and also asked the owner to answer 5a or 5b, so the answer would have been ambiguous
+- **Korolev continues the same chat when your usage comes back, even if it forgot to say it was busy** (L-20261126-1)
+  - Why: The coordinator hit the usage limit mid-work, but its heartbeat still said idle (it forgot to switch back to working), and the owner's Telegram reply arrived with nobody to act on it; the watcher checked 144 times overnight and correctly di…
+- **Tests no longer depend on the project's git history** (L-20261126-3)
+  - Why: The release-notes test copied Korolev itself and expected commits since the last tag; CI checks out only the latest commit, so v0.3.1 failed CI on GitHub while passing locally
+
+### Commits
+- dc102de Tests: release-notes test builds its own repo; CI fetches full history
+- 87b58f2 Task 17-resume-same-chat: continue the same chat when usage comes back (
+- e54c674 Task 16-safety-small: block credential reads in resumed sessions; every
+
+
 ## v0.3.1 (2026-11-26)
 
 v0.3.1 is the first published release of the v0.3 line. The v0.3.0 tag exists but was never released: its CI failed on GitHub's test machine, so the release step stopped as designed. This version contains everything listed under v0.3.0, plus:
