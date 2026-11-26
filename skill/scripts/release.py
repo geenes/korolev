@@ -34,7 +34,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from common import BOT_STATE, CONFIG_DIR, HOME, append_line, now  # noqa: E402
+from common import BOT_STATE, CONFIG_DIR, HOME, append_line, now, touch_heartbeat  # noqa: E402
 from i18n import t  # noqa: E402
 from inbox import RELEASE_APPROVAL_REPLY, RELEASE_REJECTION_REPLY  # noqa: E402
 
@@ -142,6 +142,7 @@ def main():
     parser.add_argument('--no-notify', action='store_true')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
+    touch_heartbeat('korolev', 'Working on Korolev release tasks')
     repo = Path(args.repo).resolve()
     if args.command != 'notes' and not args.dry_run:
         check_maintainer(repo)

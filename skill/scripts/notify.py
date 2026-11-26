@@ -21,7 +21,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import BOT_STATE, TELEGRAM_ENV, append_line, display_name, now, product_dir  # noqa: E402
+from common import BOT_STATE, TELEGRAM_ENV, append_line, display_name, now, product_dir, touch_heartbeat  # noqa: E402
 
 LIMIT = 3800
 
@@ -72,6 +72,7 @@ def main():
     parser.add_argument('--pending', action='store_true', help='also log as pending in DECISIONS.md')
     parser.add_argument('text', nargs='*')
     args = parser.parse_args()
+    touch_heartbeat(args.project, 'Sending the owner a message')
     body = Path(args.file).read_text() if args.file else (' '.join(args.text) if args.text else sys.stdin.read())
     body = body.strip()
     if not body:

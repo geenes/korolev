@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import HOME, append_line, now  # noqa: E402
+from common import HOME, append_line, now, touch_heartbeat  # noqa: E402
 from i18n import t  # noqa: E402
 
 LOG = HOME / 'lessons' / 'lessons.jsonl'
@@ -78,6 +78,7 @@ def main():
     r.add_argument('status', choices=['approved', 'rejected', 'applied'])
     r.add_argument('--note', default='')
     args = parser.parse_args()
+    touch_heartbeat(getattr(args, 'project', '') or None, 'Working with Korolev lessons')
 
     if args.command == 'add':
         lesson_id = next_id()

@@ -15,6 +15,7 @@ from uuid import UUID
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skill' / 'scripts'
 ROOT = SCRIPTS.parent.parent
 sys.path.insert(0, str(SCRIPTS))
+import common  # noqa: E402
 import procs  # noqa: E402
 
 NOW = datetime(2026, 11, 25, 16, tzinfo=timezone.utc).timestamp()
@@ -30,7 +31,12 @@ class ResumeTests(unittest.TestCase):
         config_dir.mkdir()
         # Exercise resume and limit handling with a fake Codex and no worker namespace.
         (config_dir / 'config.json').write_text('{"worker_sandbox": false, "isolate_codex_home": false}\n')
-        self.env = dict(os.environ, KOROLEV_HOME=str(self.home), KOROLEV_CONFIG_DIR=str(config_dir))
+        self.bot = self.base / 'bot'
+        self.user = self.base / 'user'
+        self.env = dict(os.environ, HOME=str(self.user), KOROLEV_HOME=str(self.home),
+                        KOROLEV_CONFIG_DIR=str(config_dir), KOROLEV_BOT_STATE=str(self.bot))
+        self.env.pop('KOROLEV_COORDINATOR_SESSION', None)
+        self.env.pop('KOROLEV_COORDINATOR_PID', None)
         self.clock = NOW
         self.notifications = []
         self.calls = self.base / 'calls.jsonl'
@@ -51,9 +57,9 @@ class ResumeTests(unittest.TestCase):
             '        time.sleep(0.01)\n'
         )
 
-    def heartbeat(self, *args):
+    def heartbeat(self, *args, cwd=None):
         result = subprocess.run([sys.executable, '-I', str(SCRIPTS / 'heartbeat.py'), *args],
-                                env=self.env, capture_output=True, text=True, timeout=10)
+                                cwd=cwd, env=self.env, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
 
@@ -66,8 +72,11 @@ class ResumeTests(unittest.TestCase):
     def read(self):
         return json.loads(self.heartbeat('show'))
 
+    def owner_message(self, text, *, project='demo', date=NOW - 30, message_id=10):
+        common.append_line(self.bot / 'INBOX.jsonl',
+                           {'project': project, 'date': date, 'message_id': message_id, 'text': text})
+
     def watch(self, **options):
-        import heartbeat
         import resume_watch
 
         def launch(*args, **kwargs):
@@ -77,8 +86,8 @@ class ResumeTests(unittest.TestCase):
             self.process = process
             return process
 
-        with (patch.object(heartbeat, 'HOME', self.home), patch.object(procs, 'HOME', self.home),
-              patch.object(resume_watch, 'HOME', self.home)):
+        with (patch.object(common, 'HOME', self.home), patch.object(procs, 'HOME', self.home),
+              patch.object(resume_watch, 'HOME', self.home), patch.object(resume_watch, 'BOT_STATE', self.bot)):
             return resume_watch.watch(claude=(sys.executable, str(self.fake)), clock=lambda: self.clock,
                                       notify=lambda product, body: self.notifications.append((product, body)),
                                       launch=launch, **options)
@@ -92,7 +101,56 @@ class ResumeTests(unittest.TestCase):
         self.assertIsNotNone(datetime.fromisoformat(waiting['updated_at'].replace('Z', '+00:00')).tzinfo)
         self.heartbeat('set', '--product', 'demo', '--status', 'idle', '--doing', 'finished')
         self.assertEqual(self.read()['status'], 'idle')
+        self.assertEqual(self.read()['session'], 'my-session')
         self.assertNotIn('retry_after', self.read())
+
+    def test_auto_session_uses_newest_jsonl_for_current_directory(self):
+        cwd = self.base / 'coordinator work'
+        cwd.mkdir()
+        projects = self.user / '.claude' / 'projects'
+        transcript_dir = projects / str(cwd).replace('/', '-')
+        transcript_dir.mkdir(parents=True)
+        for name, mtime in [('z-older.jsonl', NOW - 20), ('a-newer.jsonl', NOW), ('ignored.json', NOW + 20)]:
+            transcript = transcript_dir / name
+            transcript.touch()
+            os.utime(transcript, (mtime, mtime))
+        (projects / 'elsewhere').mkdir()
+        (projects / 'elsewhere' / 'unrelated.jsonl').touch()
+        self.heartbeat('set', '--product', 'demo', '--status', 'working', '--doing', 'starting',
+                       '--session', 'auto', cwd=cwd)
+        self.assertEqual(self.read()['session'], 'a-newer')
+        self.assertEqual(self.read()['cwd'], str(cwd))
+        self.heartbeat('set', '--product', 'demo', '--status', 'idle', '--doing', 'finished', cwd=self.home)
+        self.assertEqual(self.read()['session'], 'a-newer')
+        self.assertEqual(self.read()['cwd'], str(cwd))
+
+    def test_inbox_show_refreshes_idle_heartbeat_and_keeps_session(self):
+        self.record('idle', session='my-session', cwd=str(self.base))
+        started = int(time.time())
+        result = subprocess.run([sys.executable, '-I', str(SCRIPTS / 'inbox.py'), '--show', '--project', 'demo'],
+                                env=self.env, capture_output=True, text=True, timeout=10, check=True)
+        self.assertIn('0 message(s) recorded', result.stdout)
+        record = self.read()
+        self.assertEqual(record['status'], 'working')
+        self.assertEqual(record['doing'], 'Reading the owner inbox')
+        self.assertGreaterEqual(common.parse_timestamp(record['updated_at']), started)
+        self.assertEqual(record['session'], 'my-session')
+        self.assertEqual(record['cwd'], str(self.base))
+
+    def test_touch_preserves_waiting_limit_until_one_minute_has_passed(self):
+        record = self.record('waiting_limit', age=59, retry_after=common.timestamp(NOW + 600),
+                             session='my-session', cwd=str(self.base))
+        with patch.object(common, 'HOME', self.home), patch.object(common.time, 'time', return_value=NOW) as clock:
+            common.touch_heartbeat('demo', 'reading')
+            self.assertEqual(common.read_heartbeat(), record)
+            clock.return_value = NOW + 1
+            common.touch_heartbeat(None, 'reading')
+            updated = common.read_heartbeat()
+        self.assertEqual(updated['status'], 'working')
+        self.assertEqual(updated['updated_at'], common.timestamp(NOW + 1))
+        self.assertEqual(updated['product'], 'demo')
+        self.assertEqual(updated['session'], 'my-session')
+        self.assertNotIn('retry_after', updated)
 
     def test_fresh_or_idle_heartbeat_does_not_probe(self):
         for status, age in [('working', 1199), ('idle', 1800)]:
@@ -101,6 +159,66 @@ class ResumeTests(unittest.TestCase):
                 self.watch()
                 self.assertFalse(self.calls.exists())
 
+    def test_idle_with_unanswered_owner_message_resumes_same_chat_in_recorded_cwd(self):
+        cwd = self.base / 'coordinator work'
+        cwd.mkdir()
+        self.record('idle', age=60, session='recorded-session', cwd=str(cwd))
+        owner_text = 'Please continue ' + 'x' * 100
+        self.owner_message(owner_text)
+        common.append_line(self.bot / 'SENT.jsonl', {'project': 'demo', 'message_id': 9,
+                                                    'time': common.timestamp(NOW - 30)})
+        common.append_line(self.bot / 'SENT.jsonl', {'project': 'other', 'message_id': 11,
+                                                    'time': common.timestamp(NOW - 15)})
+        self.watch()
+        self.release.touch()
+        self.process.wait(10)
+        _, start = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        command = start[2]
+        self.assertEqual(start[0], str(cwd))
+        self.assertEqual(command[:3], ['--resume', 'recorded-session', '-p'])
+        self.assertNotIn('--session-id', command)
+        self.assertTrue(command[3].startswith('Your usage limit has reset. Continue where you stopped.'))
+        self.assertIn(str(self.product / 'STATE.md'), command[3])
+        self.assertIn('procs.py status demo-builder-write', command[3])
+        self.assertEqual(command[command.index('--setting-sources') + 1], '')
+        self.assertIn('--strict-mcp-config', command)
+        settings = json.loads(command[command.index('--settings') + 1])
+        self.assertTrue(settings['disableAllHooks'])
+        self.assertIn(f'Write(/{self.product}/**)', settings['permissions']['allow'])
+        self.assertEqual(self.read()['session'], 'recorded-session')
+        self.assertEqual(self.read()['cwd'], str(cwd))
+        self.assertEqual(self.notifications, [
+            ('demo', "Your usage is back. I'm continuing where I stopped: package 13"
+             f'\nOwner message: “{owner_text[:79]}…”')])
+
+    def test_idle_with_old_or_answered_messages_does_not_probe(self):
+        self.record('idle', age=60)
+        self.owner_message('old message', date=NOW - 70)
+        self.owner_message('another project', project='other', message_id=11)
+        self.watch()
+        self.assertFalse(self.calls.exists())
+        self.owner_message('answered message', message_id=12)
+        common.append_line(self.bot / 'SENT.jsonl', {'project': 'demo', 'message_id': 13,
+                                                    'time': common.timestamp(NOW - 30)})
+        self.watch()
+        self.assertFalse(self.calls.exists())
+
+    def test_unfinished_package_resumes_when_builder_lock_is_free(self):
+        self.record('idle', age=60)
+        package = self.product / 'packages' / '01-package'
+        package.mkdir(parents=True)
+        (package / 'TASK.md').touch()
+        handoff = package / 'HANDOFF.md'
+        handoff.touch()
+        self.watch()
+        self.assertFalse(self.calls.exists())
+        handoff.unlink()
+        with patch.object(procs, 'HOME', self.home), procs.run_lock('demo-builder-write'):
+            self.watch()
+            self.assertFalse(self.calls.exists())
+        self.watch()
+        self.assertEqual(len(self.notifications), 1)
+
     def test_running_coordinator_or_other_watcher_prevents_probe(self):
         self.record()
         with patch.object(procs, 'HOME', self.home):
@@ -108,6 +226,18 @@ class ResumeTests(unittest.TestCase):
                 with self.subTest(lock=lock), procs.run_lock(lock):
                     self.watch()
                     self.assertFalse(self.calls.exists())
+
+    def test_recorded_process_identity_prevents_resume(self):
+        from heartbeat import process_identity
+
+        identity = process_identity(os.getpid())
+        self.record(session='my-session', cwd=str(self.home), **identity)
+        self.watch()
+        self.assertFalse(self.calls.exists())
+        self.record(session='my-session', cwd=str(self.home), pid=identity['pid'],
+                    start_time=identity['start_time'] + 1)
+        self.watch()
+        self.assertEqual(len(self.notifications), 1)
 
     def test_probe_limit_sets_retry_and_waits_until_reset(self):
         self.record()
@@ -127,6 +257,19 @@ class ResumeTests(unittest.TestCase):
         self.response.write_text('rate_limit_exceeded')
         self.watch()
         self.assertEqual(self.read()['retry_after'], '2026-11-25T16:30:00Z')
+
+    def test_probe_limit_preserves_unanswered_message_trigger(self):
+        self.record('idle', age=60, session='my-session', cwd=str(self.home))
+        self.owner_message('Continue the build')
+        self.response.write_text(f'Usage limit reached. Reset at {int(NOW + 300)}')
+        self.watch()
+        self.clock += 299
+        self.watch()
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+        self.clock += 1
+        self.response.write_text('{"subtype":"success","result":"OK"}')
+        self.watch()
+        self.assertIn('“Continue the build”', self.notifications[0][1])
 
     def test_reset_formats_and_timezone(self):
         from resume_watch import limit_details
@@ -157,9 +300,11 @@ class ResumeTests(unittest.TestCase):
         self.assertEqual(self.read(), previous)
         self.assertEqual(self.notifications, [])
 
-    def test_success_resumes_one_session_and_notifies_once(self):
+    def test_no_recorded_session_starts_one_fresh_chat_and_notifies_once(self):
         self.record('waiting_limit', retry_after='2026-11-25T16:00:00Z')
         self.watch()
+        with patch.object(procs, 'HOME', self.home):
+            self.assertTrue(procs.is_busy('coordinator'))
         self.clock += 1800
         self.watch()
         resumed = self.read()
@@ -167,7 +312,9 @@ class ResumeTests(unittest.TestCase):
         self.assertNotIn('retry_after', resumed)
         self.assertEqual(resumed['pid'], self.process.pid)
         UUID(resumed['session'])
-        self.assertEqual(self.notifications, [('demo', 'Resumed after your usage limit reset: continuing package 13')])
+        self.assertEqual(self.notifications, [
+            ('demo', "Your usage is back. I'm continuing where I stopped: package 13"
+             '\nI started a fresh chat because no session was recorded.')])
         self.release.touch()
         self.process.wait(10)
         probe, start = [json.loads(line) for line in self.calls.read_text().splitlines()]
@@ -175,7 +322,8 @@ class ResumeTests(unittest.TestCase):
         self.assertEqual(start[0], str(self.home))
         self.assertEqual(start[1], resumed['pid'])
         self.assertEqual(start[2][0], '-p')
-        self.assertIn(resumed['session'], start[2])
+        self.assertEqual(start[2][2:4], ['--session-id', resumed['session']])
+        self.assertNotIn('--resume', start[2])
         self.assertIn('dontAsk', start[2])
         for expected in ('korolev skill', 'products/demo/STATE.md', 'Session handoff',
                          'products/demo/DECISIONS.md', 'inbox.py --show --project demo', 'Telegram'):

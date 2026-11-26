@@ -17,7 +17,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import heartbeat  # noqa: E402
 import notify as telegram  # noqa: E402
-from common import BOT_STATE, HOME, SKILL, append_line, now  # noqa: E402
+from common import (BOT_STATE, HOME, SKILL, append_line, heartbeat_lock, now, parse_timestamp,  # noqa: E402
+                    read_heartbeat, timestamp, valid_product, write_heartbeat)
 from procs import LockBusyError, is_busy, run_lock  # noqa: E402
 
 OLDER_THAN_MINUTES = 20
@@ -65,23 +66,62 @@ def limit_details(text, clock):
                 if target.timestamp() <= clock:
                     target += timedelta(days=1)
                 reset = target.timestamp()
-            return True, heartbeat.timestamp(reset)
+            return True, timestamp(reset)
         except (ValueError, OverflowError, OSError, ZoneInfoNotFoundError):
             continue
     return True, None
 
 
-def pending(record, current, stale_seconds):
-    if record.get('status') not in ('working', 'waiting_limit') or not heartbeat.valid_product(record.get('product')):
-        return False
-    if not isinstance(record.get('doing'), str) or not record['doing'].strip():
-        return False
+def latest_message(log, product, time_key):
+    latest = None
+    latest_order = (-math.inf, -1)
     try:
-        return (current - heartbeat.parse_timestamp(record.get('updated_at')) > stale_seconds
-                and (record.get('retry_after') is None
-                     or current >= heartbeat.parse_timestamp(record['retry_after'])))
+        stream = (BOT_STATE / log).open(encoding='utf-8')
+    except FileNotFoundError:
+        return latest_order, latest
+    with stream:
+        for line in stream:
+            try:
+                row = json.loads(line)
+                if not isinstance(row, dict) or row.get('project') != product:
+                    continue
+                date = parse_timestamp(row.get(time_key))
+                message_id = row.get('message_id')
+                order = (date, message_id if type(message_id) is int else -1)
+            except (ValueError, OverflowError, OSError):
+                continue
+            # Telegram message IDs order events in the same chat within one second.
+            if order > latest_order:
+                latest_order, latest = order, row
+    return latest_order, latest
+
+
+def unanswered_message(product, updated):
+    received, message = latest_message('INBOX.jsonl', product, 'date')
+    if received[0] > updated:
+        sent, _ = latest_message('SENT.jsonl', product, 'time')
+        if sent <= received:
+            return message
+    return None
+
+
+def pending(record, product_dir, current, stale_seconds):
+    if not isinstance(record.get('doing'), str) or not record['doing'].strip():
+        return False, None
+    try:
+        updated = parse_timestamp(record.get('updated_at'))
+        if record.get('retry_after') is not None and current < parse_timestamp(record['retry_after']):
+            return False, None
     except (ValueError, OverflowError, OSError):
-        return False
+        return False, None
+    product = record['product']
+    owner = unanswered_message(product, updated)
+    if owner is not None or (record.get('status') in ('working', 'waiting_limit') and current - updated > stale_seconds):
+        return True, owner
+    if is_busy(f'{product}-builder-write'):
+        return False, None
+    return any(task.is_file() and not task.with_name('HANDOFF.md').exists()
+               for task in product_dir.glob('packages/*/TASK.md')), None
 
 
 def probe(claude, clock):
@@ -109,9 +149,15 @@ def probe(claude, clock):
     return ok, False, None
 
 
-def resume_command(claude, product, session):
+def resume_command(claude, product, session, *, cwd=None, resume=False):
     scripts = SKILL / 'scripts'
     state = f'products/{product}'
+    repo = f'work/{product}/repo'
+    state_pattern = f'./{state}'
+    if cwd is not None and cwd.resolve() != HOME.resolve():
+        state = str(HOME.resolve() / state)
+        repo = str(HOME.resolve() / repo)
+        state_pattern = f'/{state}'
     project = shlex.quote(product)
 
     def python(script):
@@ -119,15 +165,17 @@ def resume_command(claude, product, session):
         return f'python3 -I {shlex.quote(str(path))}'
 
     prompt = (
-        f'Use the korolev skill ({SKILL / "SKILL.md"}). Read {state}/STATE.md, including the Session handoff, '
-        f'and {state}/DECISIONS.md. Read the inbox with {python("inbox")} --show --project {project}. '
-        'Continue the approved build loop only. Check existing worker locks and run records before starting a package. '
+        'Your usage limit has reset. Continue where you stopped. '
+        f'Use the korolev skill ({SKILL / "SKILL.md"}). Read the inbox with {python("inbox")} --show --project {project}. '
+        f'Read {state}/STATE.md, including the Session handoff, and {state}/DECISIONS.md. '
+        f'Check running jobs with {python("procs")} status {project}-builder-write and read {state}/USAGE.jsonl '
+        'as needed before starting a package. Continue the approved build loop only. '
         'Ask the owner on Telegram for anything else. Do not push, publish, deploy, spend money, or delete files. '
         'Apply these restrictions to worker tasks too. '
         'Before stopping, write the session handoff, then mark the heartbeat idle if finished or waiting for the owner. '
         'If a worker hits a usage limit, write the handoff, mark waiting_limit, and exit.'
     )
-    allow = ['Skill(korolev)', f'Write(./{state}/**)', f'Edit(./{state}/**)']
+    allow = ['Skill(korolev)', f'Write({state_pattern}/**)', f'Edit({state_pattern}/**)']
     shell = [
         f'{python("inbox")} --show --project {project}',
         f'{python("heartbeat")} set --product {project} *',
@@ -139,8 +187,7 @@ def resume_command(claude, product, session):
         f'{python("testcount")} check *',
         'python3 -m unittest discover -s tests',
     ]
-    repo = shlex.quote(f'work/{product}/repo')
-    shell.extend(f'git -C {repo} {cmd} *' for cmd in ('status', 'log', 'show', 'diff', 'rev-parse'))
+    shell.extend(f'git -C {shlex.quote(repo)} {cmd} *' for cmd in ('status', 'log', 'show', 'diff', 'rev-parse'))
     home = Path.home()
     # Claude Code permission patterns use // for absolute paths.
     credentials = [f'/{home / path}' for path in ('.config/korolev/**', '.ssh/**', '.codex/auth.json', '.gemini/**')]
@@ -148,7 +195,8 @@ def resume_command(claude, product, session):
     deny = [f'{tool}({path})' for tool in ('Read', 'Glob', 'Grep', 'Write', 'Edit') for path in credentials]
     settings = json.dumps({'disableAllHooks': True,
                            'permissions': {'allow': allow + [f'Bash({rule})' for rule in shell], 'deny': deny}})
-    return [*claude, '-p', prompt, '--session-id', session, '--permission-mode', 'dontAsk',
+    chat = ['--resume', session, '-p', prompt] if resume else ['-p', prompt, '--session-id', session]
+    return [*claude, *chat, '--permission-mode', 'dontAsk',
             '--setting-sources', '', '--strict-mcp-config', '--settings', settings,
             '--tools', 'Bash,Read,Write,Edit,Glob,Grep,Skill']
 
@@ -160,40 +208,57 @@ def notify_owner(product, body):
 
 def watch(*, claude=('claude',), clock=time.time, notify=notify_owner, launch=subprocess.Popen,
           stale_seconds=OLDER_THAN_MINUTES * 60):
-    if not pending(heartbeat.read(), clock(), stale_seconds):
+    if not valid_product(read_heartbeat().get('product')):
         return
     try:
         with run_lock('resume'):
-            if is_busy(heartbeat.COORDINATOR_LOCK):
-                return
             with run_lock(heartbeat.COORDINATOR_LOCK) as fd:
-                previous = heartbeat.read()
-                if not pending(previous, clock(), stale_seconds):
+                previous = read_heartbeat()
+                product = previous.get('product')
+                if not valid_product(product) or heartbeat.recorded_process_running(previous):
                     return
-                product = previous['product']
-                if not (HOME / 'products' / product).is_dir():
+                product_dir = HOME / 'products' / product
+                if not product_dir.is_dir() or not pending(previous, product_dir, clock(), stale_seconds)[0]:
                     return
                 ok, hit, retry = probe(claude, clock)
-                with heartbeat.state_lock():
-                    if heartbeat.read() != previous:
+                with heartbeat_lock():
+                    if read_heartbeat() != previous:
+                        return
+                    current = clock()
+                    ready, owner = pending(previous, product_dir, current, stale_seconds)
+                    if not ready:
                         return
                     if hit:
-                        retry = retry or heartbeat.timestamp(clock() + heartbeat.DEFAULT_RETRY_SECONDS)
-                        heartbeat.write(dict(previous, status='waiting_limit', retry_after=retry))
+                        retry = retry or timestamp(current + heartbeat.DEFAULT_RETRY_SECONDS)
+                        write_heartbeat(dict(previous, status='waiting_limit', retry_after=retry,
+                                             limit_set_at=current))
                         return
                     if not ok:
                         return
-                    session = str(uuid.uuid4())
-                    process = launch(resume_command(claude, product, session), cwd=HOME,
-                                     env=dict(os.environ, KOROLEV_COORDINATOR_SESSION=session),
+                    same_chat = bool(previous.get('session'))
+                    session = previous['session'] if same_chat else str(uuid.uuid4())
+                    # Older heartbeats recorded sessions launched from HOME without a cwd.
+                    cwd = Path(previous.get('cwd') or HOME) if same_chat else HOME
+                    env = dict(os.environ, KOROLEV_COORDINATOR_SESSION=session)
+                    env.pop('KOROLEV_COORDINATOR_PID', None)
+                    command = resume_command(claude, product, session, cwd=cwd, resume=same_chat)
+                    process = launch(command, cwd=cwd, env=env,
                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                      start_new_session=True, pass_fds=(fd,))
-                    resumed = dict(previous, status='working', updated_at=heartbeat.timestamp(clock()),
-                                   session=session, pid=process.pid)
-                    resumed.pop('retry_after', None)
-                    heartbeat.write(resumed)
+                    resumed = dict(product=product, status='working', updated_at=timestamp(clock()),
+                                   doing=previous['doing'], session=session, cwd=str(cwd),
+                                   **heartbeat.process_identity(process.pid))
+                    write_heartbeat(resumed)
+            notice = f"Your usage is back. I'm continuing where I stopped: {previous['doing']}"
+            if owner and isinstance(owner.get('text'), str):
+                quote = ' '.join(owner['text'].split())
+                if len(quote) > 80:
+                    quote = quote[:79] + '…'
+                notice += f'\nOwner message: “{quote}”'
+            if not same_chat:
+                notice += '\nI started a fresh chat because no session was recorded.'
             try:
-                notify(product, f'Resumed after your usage limit reset: continuing {previous["doing"]}')
+                notify(product, notice)
             except (Exception, SystemExit):
                 print('Could not send the resume notice on Telegram.', file=sys.stderr)
     except LockBusyError:

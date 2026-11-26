@@ -28,7 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (CONFIG_DIR, append_line, codex_home, display_name, isolate_codex_home,  # noqa: E402
-                    now, product_dir, roles, work_repo)
+                    now, product_dir, roles, touch_heartbeat, work_repo)
 from procs import LockBusyError, run_lock  # noqa: E402
 from resume_watch import limit_details  # noqa: E402
 import sandbox  # noqa: E402
@@ -181,6 +181,7 @@ def main():
     role = roles().get(args.role)
     if not role:
         sys.exit(f'unknown role {args.role}; known: {", ".join(roles())}')
+    touch_heartbeat(args.product, f'Starting a {args.role} job')
     pdir = product_dir(args.product).resolve()
     if not pdir.exists():
         sys.exit(f'no product folder {pdir}; run onboard.py init first')

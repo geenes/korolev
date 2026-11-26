@@ -26,7 +26,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import BOT_STATE, HOME, append_line, display_name, write_atomic  # noqa: E402
+from common import BOT_STATE, HOME, append_line, display_name, touch_heartbeat, write_atomic  # noqa: E402
 from i18n import t  # noqa: E402
 from notify import load_env  # noqa: E402
 
@@ -113,6 +113,7 @@ def main():
     parser.add_argument('--last', type=int, default=20)
     args = parser.parse_args()
     if args.show:
+        touch_heartbeat(args.project, 'Reading the owner inbox')
         return show(args)
     BOT_STATE.mkdir(parents=True, exist_ok=True)
     lock = LOCK.open('a+')

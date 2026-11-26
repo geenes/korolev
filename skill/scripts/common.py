@@ -1,9 +1,12 @@
 """Shared paths and settings for Korolev scripts. Standard library only."""
+import fcntl
 import json
 import os
 import re
 import tempfile
 import time
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 SKILL = Path(__file__).resolve().parent.parent
@@ -106,6 +109,79 @@ def display_name(name):
 
 def now():
     return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+
+
+def timestamp(seconds):
+    return datetime.fromtimestamp(seconds, timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
+
+
+def parse_timestamp(value):
+    if type(value) in (float, int):
+        return value
+    if not isinstance(value, str):
+        raise ValueError('invalid timestamp')
+    parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    if parsed.tzinfo is None:
+        raise ValueError('timestamp needs a timezone')
+    return parsed.timestamp()
+
+
+def valid_product(product):
+    return isinstance(product, str) and re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9._-]*', product) is not None
+
+
+def read_heartbeat():
+    try:
+        result = json.loads((HOME / 'coordinator.json').read_text(encoding='utf-8'))
+    except (FileNotFoundError, ValueError):
+        return {}
+    return result if isinstance(result, dict) else {}
+
+
+@contextmanager
+def heartbeat_lock():
+    HOME.mkdir(parents=True, exist_ok=True)
+    with (HOME / 'coordinator.json.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def write_heartbeat(record):
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=HOME, delete=False) as stream:
+        staging = Path(stream.name)
+        try:
+            json.dump(record, stream, ensure_ascii=False)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+            staging.replace(HOME / 'coordinator.json')
+        finally:
+            staging.unlink(missing_ok=True)
+
+
+def touch_heartbeat(product, doing):
+    """Record coordinator activity. Unscoped commands use the active product."""
+    try:
+        with heartbeat_lock():
+            record = read_heartbeat()
+            product = record.get('product') if product is None else product
+            if not valid_product(product):
+                return
+            current = time.time()
+            if record.get('status') == 'waiting_limit':
+                try:
+                    waiting_since = parse_timestamp(record.get('limit_set_at', record.get('updated_at')))
+                    if current - waiting_since < 60:
+                        return
+                except (ValueError, OverflowError, OSError):
+                    pass
+            record.update(product=product, doing=doing, status='working', updated_at=timestamp(current))
+            record.pop('retry_after', None)
+            record.pop('limit_set_at', None)
+            write_heartbeat(record)
+    except OSError:
+        # Commands such as inbox --show must also work in read-only environments.
+        pass
 
 
 def write_atomic(path, text):
