@@ -234,9 +234,16 @@ class ReleaseTitleTests(Sandbox):
         return lesson_id, log
 
     def draft_notes(self):
+        # Build a small repo with known history instead of cloning Korolev itself:
+        # CI checks out only the latest commit, so the real history is not available there.
         repo = self.base / 'draft-repo'
-        subprocess.run(['git', 'clone', '-q', '--local', '--no-hardlinks', '--no-tags', '--no-checkout',
-                        str(ROOT), str(repo)], check=True)
+        repo.mkdir()
+        git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@example.test']
+        subprocess.run(['git', 'init', '-q', '-b', 'main'], cwd=repo, check=True)
+        for name in ('first', 'second'):
+            (repo / f'{name}.txt').write_text(name + '\n')
+            subprocess.run(['git', 'add', '.'], cwd=repo, check=True)
+            subprocess.run([*git, 'commit', '-qm', f'Add {name}'], cwd=repo, check=True)
         result = self.run_script('release.py', 'notes', '--repo', str(repo))
         return result.stdout, (repo / 'RELEASE-NOTES.draft.md').read_text()
 
