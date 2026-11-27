@@ -1,8 +1,10 @@
 import io
 import json
+import os
 import subprocess
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest.mock import patch
 
 from skill.scripts import ci_wait
@@ -46,6 +48,20 @@ class CIWaitTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertFalse(verdict['ok'])
         self.assertIn(message, verdict['error'])
+
+    def test_gh_uses_verified_executable_and_allowlisted_environment(self):
+        executable = Path('/verified/bin/gh')
+        ambient = {'HOME': '/launcher', 'PATH': '/shadow', 'GH_TOKEN': 'fixture',
+                   'GH_HOST': 'shadow.invalid', 'GH_CONFIG_DIR': '/shadow', 'LD_PRELOAD': '/shadow/lib.so'}
+        with (patch.dict(os.environ, ambient, clear=True),
+              patch.object(ci_wait, 'trusted_system_executable', return_value=executable) as select,
+              patch.object(ci_wait.subprocess, 'run', return_value=response()) as spawn):
+            ci_wait.gh(*API, timeout=5)
+        select.assert_called_once_with('gh')
+        self.assertEqual(spawn.call_args.args[0], [executable, *API])
+        self.assertEqual(spawn.call_args.kwargs['env'],
+                         {'HOME': '/launcher', 'PATH': '/usr/bin:/bin', 'GH_TOKEN': 'fixture',
+                          'GH_HOST': 'github.com', 'GH_PROMPT_DISABLED': '1', 'LC_ALL': 'C'})
 
     def test_run_not_found_waits_until_timeout(self):
         clock = [0]

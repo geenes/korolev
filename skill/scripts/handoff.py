@@ -9,7 +9,7 @@ from collections import deque
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import now, product_dir, work_repo, write_atomic  # noqa: E402
+from common import now, product_dir, project_folder, write_atomic  # noqa: E402
 from inbox import records as inbox_records  # noqa: E402
 from lesson import lessons  # noqa: E402
 from privacy_scan import EMAIL, HOME_PATH, SAFE_EMAIL, SECRETS, check_text, git  # noqa: E402
@@ -107,7 +107,7 @@ def preview(text):
 def format_handoff(product, folder, notes, findings):
     runs = recent_runs(folder / 'USAGE.jsonl') or ['- No usage runs recorded.']
     pending = sum(item['status'] == 'pending' for item in lessons().values())
-    summary = [f'## {TITLE}', '', f'- UTC: {now()}', clone_summary(work_repo(product)),
+    summary = [f'## {TITLE}', '', f'- UTC: {now()}', clone_summary(project_folder(product)),
                f'- Pending lessons: {pending}', '', '### Recent runs', *runs]
     lines = redact_text('\n'.join(summary), findings).splitlines()
 

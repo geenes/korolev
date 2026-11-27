@@ -1,11 +1,14 @@
 """Exercise the handoff CLI with a temporary Korolev home and local data."""
 import json
-import os
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
+
+if __package__:
+    from .git_fixture import git_fixture
+else:
+    from git_fixture import git_fixture
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'skill' / 'scripts' / 'handoff.py'
@@ -13,12 +16,10 @@ SCRIPT = ROOT / 'skill' / 'scripts' / 'handoff.py'
 
 class HandoffTests(unittest.TestCase):
     def setUp(self):
-        temp = tempfile.TemporaryDirectory()
-        self.addCleanup(temp.cleanup)
-        base = Path(temp.name)
+        base, self.env = self.enterContext(git_fixture())
         self.home = base / 'home'
         self.bot = base / 'bot'
-        self.env = dict(os.environ, KOROLEV_HOME=str(self.home), KOROLEV_BOT_STATE=str(self.bot),
+        self.env.update(KOROLEV_HOME=str(self.home), KOROLEV_BOT_STATE=str(self.bot),
                         KOROLEV_CONFIG_DIR=str(base / 'config'))
         self.product = self.home / 'products' / 'demo'
         self.product.mkdir(parents=True)
@@ -139,9 +140,11 @@ class HandoffTests(unittest.TestCase):
     def test_reports_clone_head_branch_and_working_tree_status(self):
         repo = self.home / 'work' / 'demo' / 'repo'
         repo.parent.mkdir(parents=True)
-        subprocess.run(['git', 'clone', '-q', '--local', '--no-hardlinks', str(ROOT), str(repo)], check=True)
-        subprocess.run(['git', '-C', str(repo), 'switch', '-qc', 'handoff-test'], check=True)
-        head = subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip()
+        git = ['git', '-C', str(repo)]
+        subprocess.run(['git', 'init', '-q', '-b', 'handoff-test', str(repo)], env=self.env, check=True)
+        subprocess.run([*git, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+                        'commit', '--allow-empty', '-qm', 'Fixture'], env=self.env, check=True)
+        head = subprocess.check_output([*git, 'rev-parse', 'HEAD'], env=self.env, text=True).strip()
         state, _ = self.run_handoff('Notes')
         self.assertIn(head, state)
         self.assertIn('handoff-test', state)

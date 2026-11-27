@@ -1,12 +1,15 @@
 import json
-import os
 import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
+
+if __package__:
+    from .git_fixture import git_fixture
+else:
+    from git_fixture import git_fixture
 
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skill' / 'scripts'
@@ -14,9 +17,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / 'skill' / 'scripts'
 
 class CodexHomeTests(unittest.TestCase):
     def setUp(self):
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        self.base = Path(directory.name)
+        self.base, self.env = self.enterContext(git_fixture())
         self.user_home = self.base / 'user'
         self.real_home = self.user_home / '.codex'
         self.real_home.mkdir(parents=True)
@@ -27,7 +28,7 @@ class CodexHomeTests(unittest.TestCase):
         self.config_dir = self.user_home / '.config' / 'korolev'
         self.config_dir.mkdir(parents=True)
         # Exercise Codex home isolation without requiring a worker namespace.
-        (self.config_dir / 'config.json').write_text('{"worker_sandbox": false}\n')
+        (self.config_dir / 'config.json').write_text('{"worker_sandbox": false, "worker_network": "host"}\n')
         self.korolev_home = self.base / 'korolev'
         self.product = self.korolev_home / 'products' / 'demo'
         self.product.mkdir(parents=True)
@@ -50,7 +51,7 @@ class CodexHomeTests(unittest.TestCase):
             'out.write_text(os.environ.get("CODEX_HOME", "<unset>"))\n'
         )
         fake_codex.chmod(0o700)
-        self.env = dict(os.environ, HOME=str(self.user_home), PATH=str(bin_dir),
+        self.env.update(HOME=str(self.user_home), PATH=str(bin_dir),
                         KOROLEV_HOME=str(self.korolev_home), KOROLEV_CONFIG_DIR=str(self.config_dir),
                         KOROLEV_BOT_STATE=str(self.base / 'bot'))
         for key in ('CODEX_HOME', 'KOROLEV_CODEX_HOME'):
@@ -61,7 +62,7 @@ class CodexHomeTests(unittest.TestCase):
                               env=self.env, capture_output=True, text=True, timeout=10)
 
     def run_worker(self):
-        return self.run_script('run_codex.py', '--role', 'analyst', '--product', 'demo',
+        return self.run_script('run_codex.py', '--role', 'analyst', '--prompt-only', '--product', 'demo',
                                '--cwd', str(self.base), '--prompt', str(self.prompt), '--out', 'HANDOFF.md')
 
     def assert_worker_home(self, expected, mode):
@@ -73,7 +74,7 @@ class CodexHomeTests(unittest.TestCase):
         self.assertEqual(json.loads((self.product / 'USAGE.jsonl').read_text().splitlines()[-1]), record)
 
     def disable_isolation(self):
-        (self.config_dir / 'config.json').write_text('{"worker_sandbox": false, "isolate_codex_home": false}\n')
+        (self.config_dir / 'config.json').write_text('{"worker_sandbox": false, "worker_network": "host", "isolate_codex_home": false}\n')
 
     def test_worker_is_isolated_by_default(self):
         self.assert_worker_home(self.isolated_home, 'isolated')

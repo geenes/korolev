@@ -15,9 +15,11 @@ service reads: getUpdates consumes updates for everyone.
 """
 import argparse
 import fcntl
+import http.client
 import json
 import os
 import re
+import ssl
 import sys
 import time
 import urllib.error
@@ -34,22 +36,45 @@ INBOX = BOT_STATE / 'INBOX.jsonl'
 OFFSET = BOT_STATE / 'offset'
 SENT = BOT_STATE / 'SENT.jsonl'
 LOCK = BOT_STATE / 'inbox.lock'
-RELEASE_APPROVAL_REPLY = re.compile(r'^(a|а|да|yes|ok|ок|approve|approved|confirmed|опубликовать|✅)\b')
-RELEASE_REJECTION_REPLY = re.compile(r'^(b|б|нет|no|reject|отклонить|не публиковать)\b')
+RELEASE_APPROVAL_REPLY = re.compile(r'^(a|а|да|yes|ok|ок|approve|approved|confirmed|опубликовать|✅)\Z')
+RELEASE_REJECTION_REPLY = re.compile(r'^(b|б|нет|no|reject|отклонить|не публиковать)\Z')
 
 
-def call(token, method, params, timeout=70):
+class TransientPollError(Exception):
+    def __init__(self, kind, retry_after=None):
+        super().__init__(kind)
+        self.retry_after = retry_after
+
+
+def call(token, method, params, timeout=70, *, retry_transient=False):
     data = urllib.parse.urlencode(params).encode()
     try:
         return json.load(urllib.request.urlopen('https://api.telegram.org/bot' + token + '/' + method,
                                                 data=data, timeout=timeout))
     except urllib.error.HTTPError as error:  # Telegram explains rejections in the JSON body
+        if retry_transient:
+            with error:
+                if error.code == 429:
+                    try:
+                        retry_after = json.load(error)['parameters']['retry_after']
+                    except (KeyError, TypeError, ValueError, OSError, http.client.HTTPException):
+                        retry_after = None
+                    if type(retry_after) is not int or retry_after <= 0:
+                        retry_after = None
+                    raise TransientPollError('HTTP 429', retry_after) from None
+                if 500 <= error.code < 600:
+                    raise TransientPollError(f'HTTP {error.code}') from None
+                raise SystemExit(f'telegram {method} failed: HTTP {error.code}') from None
         try:
             return json.load(error)
         except ValueError:
             raise SystemExit(f'telegram {method} failed: HTTP {error.code}') from None
     except Exception as error:  # never echo the URL: it contains the token
-        raise SystemExit(f'telegram {method} failed: {type(error).__name__}') from None
+        kind = type(error).__name__
+        if retry_transient and isinstance(error, (urllib.error.URLError, ConnectionError, TimeoutError,
+                                                  http.client.HTTPException, ssl.SSLError)):
+            raise TransientPollError(kind) from None
+        raise SystemExit(f'telegram {method} failed: {kind}') from None
 
 
 def acknowledge(token, chat, message_id, text):
@@ -126,16 +151,37 @@ def main():
     if not env.get('KOROLEV_OWNER_ID'):
         sys.exit('KOROLEV_OWNER_ID missing: run setup_telegram.py')
     token, chat, owner = env['KOROLEV_BOT_TOKEN'], int(env['KOROLEV_CHAT_ID']), int(env['KOROLEV_OWNER_ID'])
-    if call(token, 'getWebhookInfo', {}).get('result', {}).get('url'):
-        sys.exit('this bot has a webhook; getUpdates cannot be used')
-    offset = int(OFFSET.read_text()) if OFFSET.exists() else 0
-    seen = {r['update_id'] for r in records()}
-    deadline = time.time() + args.wait
+    deadline = time.monotonic() + args.wait
     accepted = []
+    backoff = 5
+    method = 'getWebhookInfo'
     while True:
-        poll = max(0, min(50, int(deadline - time.time()))) if args.wait else 0
-        updates = call(token, 'getUpdates', {'offset': offset, 'timeout': poll,
-                                             'allowed_updates': json.dumps(['message'])}, timeout=poll + 20).get('result', [])
+        remaining = deadline - time.monotonic()
+        if args.wait and remaining <= 0:
+            break
+        poll = min(50, int(remaining)) if args.wait else 0
+        try:
+            if method == 'getWebhookInfo':
+                webhook = call(token, method, {}, timeout=min(70, remaining) if args.wait else 70,
+                               retry_transient=bool(args.wait))
+                if webhook.get('result', {}).get('url'):
+                    sys.exit('this bot has a webhook; getUpdates cannot be used')
+                offset = int(OFFSET.read_text()) if OFFSET.exists() else 0
+                seen = {r['update_id'] for r in records()}
+                method, backoff = 'getUpdates', 5
+                continue
+            updates = call(token, 'getUpdates', {'offset': offset, 'timeout': poll,
+                                                'allowed_updates': json.dumps(['message'])},
+                           timeout=poll + 20, retry_transient=bool(args.wait)).get('result', [])
+        except TransientPollError as error:
+            remaining = max(0, deadline - time.monotonic())
+            delay = min(backoff if error.retry_after is None else error.retry_after, remaining)
+            print(f'telegram {method} transient failure ({error}), retry delay {delay:g}s', file=sys.stderr)
+            if delay:
+                time.sleep(delay)
+            backoff = min(60, backoff * 2)
+            continue
+        backoff = 5
         for update in updates:
             message = update.get('message') or {}
             text = message.get('text', '')
@@ -154,7 +200,7 @@ def main():
             offset = max(offset, update['update_id'] + 1)
         if updates:
             write_atomic(OFFSET, str(offset))
-        if accepted or not args.wait or time.time() >= deadline:
+        if accepted or not args.wait:
             break
     for record in accepted:
         print(json.dumps(record, ensure_ascii=False))

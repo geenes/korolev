@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import subprocess
@@ -67,6 +68,22 @@ class ProcessLockTests(unittest.TestCase):
             self.assertEqual(status, {'name': LOCK, 'busy': True, 'pid': pid,
                                       'start_time': start_time, 'same_process': True})
             self.assertEqual(self.read_cli('list'), [status])
+
+    def test_repository_lock_cli_shows_session_and_label(self):
+        common_dir = self.home / 'owner' / '.git'
+        common_dir.mkdir(parents=True)
+        (self.home / 'projects.json').write_text(json.dumps({
+            'demo': {'git_common_dir': str(common_dir)},
+        }))
+        lock_name = hashlib.sha256(os.fsencode(common_dir)).hexdigest()[:16]
+        self.assertFalse(self.read_cli('repo-lock', '--product', 'demo', '--status')['busy'])
+        with procs.repo_lock(common_dir, session='session-1', label='coordinator'):
+            status = self.read_cli('repo-lock', '--product', 'demo', '--status')
+            self.assertEqual(status, {'name': lock_name, 'busy': True, 'pid': os.getpid(),
+                                      'start_time': procs._start_time(os.getpid()), 'same_process': True,
+                                      'session': 'session-1', 'label': 'coordinator'})
+            self.assertTrue((self.home / 'locks' / f'{lock_name}.lock').is_file())
+        self.assertFalse(self.read_cli('repo-lock', '--product', 'demo', '--status')['busy'])
 
     def test_launcher_exits_75_when_the_builder_lock_is_held(self):
         product = self.home / 'products' / 'demo'

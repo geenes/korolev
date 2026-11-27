@@ -1,12 +1,15 @@
 """Offline tests for the Korolev skill scripts. Run: python3 -m unittest discover -s tests"""
 import fcntl
 import json
-import os
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
+
+if __package__:
+    from .git_fixture import git_fixture
+else:
+    from git_fixture import git_fixture
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'skill' / 'scripts'
@@ -14,14 +17,9 @@ SCRIPTS = ROOT / 'skill' / 'scripts'
 
 class Sandbox(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        base = Path(self.tmp.name)
-        self.env = dict(os.environ, KOROLEV_HOME=str(base / 'home'), KOROLEV_CONFIG_DIR=str(base / 'config'),
-                        KOROLEV_BOT_STATE=str(base / 'bot'))
-        self.base = base
-
-    def tearDown(self):
-        self.tmp.cleanup()
+        self.base, self.env = self.enterContext(git_fixture())
+        self.env.update(KOROLEV_HOME=str(self.base / 'home'), KOROLEV_CONFIG_DIR=str(self.base / 'config'),
+                        KOROLEV_BOT_STATE=str(self.base / 'bot'))
 
     def run_script(self, name, *args, check=True):
         result = subprocess.run([sys.executable, '-I', str(SCRIPTS / name), *args], env=self.env,
@@ -42,8 +40,7 @@ class OnboardTests(Sandbox):
     def make_origin(self):
         origin = self.base / 'origin'
         origin.mkdir()
-        for cmd in (['git', 'init', '-q', '-b', 'main'],):
-            subprocess.run(cmd, cwd=origin, check=True)
+        subprocess.run(['git', 'init', '-q', '-b', 'main'], cwd=origin, env=self.env, check=True)
         (origin / 'README.md').write_text('# Demo\n')
         (origin / 'docs').mkdir()
         (origin / 'docs' / 'SPEC.md').write_text('# Spec\n')
@@ -52,19 +49,19 @@ class OnboardTests(Sandbox):
         (origin / 'tests').mkdir()
         (origin / 'tests' / 'test_x.py').write_text('def test_x():\n    assert True\n')
         (origin / 'pyproject.toml').write_text('[tool.pytest.ini_options]\n')
-        subprocess.run(['git', 'add', '.'], cwd=origin, check=True)
-        subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init'], cwd=origin, check=True)
+        subprocess.run(['git', 'add', '.'], cwd=origin, env=self.env, check=True)
+        subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init'], cwd=origin, env=self.env, check=True)
         return origin
 
     def test_init_local_path_leaves_original_untouched_and_writes_inventory(self):
         origin = self.make_origin()
-        before = subprocess.run(['git', 'status', '--porcelain'], cwd=origin, capture_output=True, text=True).stdout
+        before = subprocess.run(['git', 'status', '--porcelain'], cwd=origin, env=self.env, capture_output=True, text=True).stdout
         out = json.loads(self.run_script('onboard.py', 'init', str(origin), '--name', 'demo').stdout)
         self.assertIn('original untouched', out['clone_status'])
         inv = Path(out['inventory']).read_text()
         for needle in ('docs/SPEC.md', 'sub/AGENTS.md', 'pytest', 'test-like files'):
             self.assertIn(needle, inv)
-        self.assertEqual(before, subprocess.run(['git', 'status', '--porcelain'], cwd=origin,
+        self.assertEqual(before, subprocess.run(['git', 'status', '--porcelain'], cwd=origin, env=self.env,
                                                 capture_output=True, text=True).stdout)
         for name in ('STATE.md', 'DECISIONS.md', 'PLAN.md', 'QUESTIONS.md', 'product.json'):
             self.assertTrue((Path(out['product_dir']) / name).exists(), name)
@@ -133,9 +130,9 @@ class LessonTests(Sandbox):
         (origin / '.claude' / 'skills' / 'x').mkdir(parents=True)
         (origin / '.claude' / 'skills' / 'x' / 'SKILL.md').write_text('---\nname: x\n---\n')
         (origin / '.mcp.json').write_text('{}')
-        subprocess.run(['git', 'init', '-q', '-b', 'main'], cwd=origin, check=True)
-        subprocess.run(['git', 'add', '.'], cwd=origin, check=True)
-        subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'i'], cwd=origin, check=True)
+        subprocess.run(['git', 'init', '-q', '-b', 'main'], cwd=origin, env=self.env, check=True)
+        subprocess.run(['git', 'add', '.'], cwd=origin, env=self.env, check=True)
+        subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'i'], cwd=origin, env=self.env, check=True)
         out = json.loads(self.run_script('onboard.py', 'init', str(origin), '--name', 'eco').stdout)
         inv = Path(out['inventory']).read_text()
         self.assertIn('Claude skills', inv)
@@ -149,17 +146,17 @@ class ReleaseTests(Sandbox):
 
 
 class PrivacyTests(Sandbox):
-    def repo_with(self, content, email='12345+someone@users.noreply.github.com', message='change'):
-        repo = self.base / 'r'
+    def repo_with(self, content, email='12345+someone@users.noreply.github.com', message='change', name='r'):
+        repo = self.base / name
         repo.mkdir(exist_ok=True)
         if not (repo / '.git').exists():
-            subprocess.run(['git', 'init', '-q', '-b', 'main'], cwd=repo, check=True)
+            subprocess.run(['git', 'init', '-q', '-b', 'main'], cwd=repo, env=self.env, check=True)
             (repo / 'a.txt').write_text('base\n')
-            subprocess.run(['git', 'add', '.'], cwd=repo, check=True)
-            subprocess.run(['git', '-c', 'user.name=x', '-c', f'user.email={email}', 'commit', '-qm', 'base'], cwd=repo, check=True)
+            subprocess.run(['git', 'add', '.'], cwd=repo, env=self.env, check=True)
+            subprocess.run(['git', '-c', 'user.name=x', '-c', f'user.email={email}', 'commit', '-qm', 'base'], cwd=repo, env=self.env, check=True)
         (repo / 'b.txt').write_text(content)
-        subprocess.run(['git', 'add', '.'], cwd=repo, check=True)
-        subprocess.run(['git', '-c', 'user.name=x', '-c', f'user.email={email}', 'commit', '-qm', message], cwd=repo, check=True)
+        subprocess.run(['git', 'add', '.'], cwd=repo, env=self.env, check=True)
+        subprocess.run(['git', '-c', 'user.name=x', '-c', f'user.email={email}', 'commit', '-qm', message], cwd=repo, env=self.env, check=True)
         return repo
 
     def scan(self, repo):
@@ -177,11 +174,9 @@ class PrivacyTests(Sandbox):
         fake_home = '/' + 'home' + '/alice/work/file'
         cases = ['contact me at ' + fake_email + '\n', 'see ' + fake_home + '\n',
                  'token = "' + 'ghp_' + 'A' * 36 + '"\n', 'notes about ProjectX launch\n']
-        for content in cases:
+        for i, content in enumerate(cases):
             with self.subTest(content=content[:20]):
-                self.tmp.cleanup(); self.setUp(); config = self.base / 'config'; config.mkdir()
-                (config / 'privacy.json').write_text(json.dumps({'deny': ['projectx']}))
-                result = self.scan(self.repo_with(content))
+                result = self.scan(self.repo_with(content, name=f'r-{i}'))
                 self.assertEqual(result.returncode, 1, result.stdout)
                 self.assertNotIn(fake_email, result.stdout)  # findings are redacted
 
@@ -239,11 +234,11 @@ class ReleaseTitleTests(Sandbox):
         repo = self.base / 'draft-repo'
         repo.mkdir()
         git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@example.test']
-        subprocess.run(['git', 'init', '-q', '-b', 'main'], cwd=repo, check=True)
+        subprocess.run(['git', 'init', '-q', '-b', 'main'], cwd=repo, env=self.env, check=True)
         for name in ('first', 'second'):
             (repo / f'{name}.txt').write_text(name + '\n')
-            subprocess.run(['git', 'add', '.'], cwd=repo, check=True)
-            subprocess.run([*git, 'commit', '-qm', f'Add {name}'], cwd=repo, check=True)
+            subprocess.run(['git', 'add', '.'], cwd=repo, env=self.env, check=True)
+            subprocess.run([*git, 'commit', '-qm', f'Add {name}'], cwd=repo, env=self.env, check=True)
         result = self.run_script('release.py', 'notes', '--repo', str(repo))
         return result.stdout, (repo / 'RELEASE-NOTES.draft.md').read_text()
 

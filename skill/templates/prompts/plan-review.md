@@ -1,4 +1,6 @@
-You are an independent senior reviewer giving a second opinion. Read PLAN.md, ANALYSIS.md and INVENTORY.md in the project state folder named above. Then check the claims against the actual code in the repository. Read-only: do not modify anything.
+You are an independent senior reviewer giving a second opinion. Read PLAN.md, ANALYSIS.md and INVENTORY.md in the run context bundle named above. Then check the claims against the actual code in the repository. Read-only: do not modify anything.
+
+Context: PLAN.md, ANALYSIS.md, INVENTORY.md
 
 Report, most important first:
 1. Wrong or unverified claims in the plan about the current code, build, tests or specs, each with evidence (file:line).

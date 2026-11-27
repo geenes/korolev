@@ -16,14 +16,14 @@
 
 | | |
 |---|---|
-| **Onboards any repo from a link** | Clones it into its own workspace (your checkout is never touched), inventories the code, specs and agent setup, and has Codex write a precise analysis. |
+| **Onboards any repo from a link or a path** | Clones it into its own workspace (your checkout is never touched), inventories the code, specs and agent setup, and has Codex write a precise analysis. |
 | **Builds or fixes the plan** | Adopts a good existing plan and corrects it, or writes a new one, split into small, checkable packages. |
-| **Second and third opinions** | Two different Codex models (Astra and Sol 5.6, extra-high reasoning) review the plan against the real code, independently. |
-| **Asks you only real decisions** | Plain-language questions on Telegram, each with options, a recommendation and how to answer. Your reply wakes the coordinator. |
-| **Hands the hard work to Codex** | One fresh Codex session per package, in a sandbox that can't see your other projects or secrets. |
+| **Second and third opinions** | Two different Codex models (Astra and Sol 5.6, extra-high reasoning) review the plan against the real code, independently. Money, auth and security changes get the same two-reviewer check on the finished code. |
+| **Asks you only real decisions** | Plain-language questions on Telegram, each with options, a recommendation and how to answer. Only your account is heard, and your reply wakes the coordinator. |
+| **Hands the hard work to Codex** | One fresh Codex session per package, in a bubblewrap sandbox: no other projects, no credential files except the Codex login it needs, read-only Git metadata, and network access only to the model's own endpoints. |
 | **Verifies for real** | Proves tests actually ran (no silent skips), waits for CI on the exact commit, and checks every change before accepting it. |
-| **Learns from its mistakes** | Each mistake becomes a concrete improvement proposal. You approve it, Korolev builds it into itself, and publishes a new version, again only after you approve. |
-| **Keeps going when you run out of usage** | Optional: a small watchdog waits for your usage limit to reset, then continues the work and tells you on Telegram. Pushing and publishing still wait for you. |
+| **Learns from its mistakes** | Each mistake becomes a concrete improvement proposal. You approve it, Korolev builds it into itself, and a new version is published only after you approve the exact commit and release notes on Telegram and a privacy scan comes back clean. Changes to its own safety rules always need your explicit approval. |
+| **Keeps going when you run out of usage** | Optional: a Codex usage-limit stop is recognised as such, and a small watchdog waits for the reset, then continues the approved work and tells you on Telegram. Pushing and publishing still wait for you. |
 | **Cheap by design** | No polling, small contexts, a clean Codex setup for workers, and token use measured per job. |
 
 ## How it works
@@ -44,16 +44,16 @@
 
 ## Install (once per machine)
 
-Requirements: [Claude Code](https://claude.com/claude-code), the [Codex CLI](https://github.com/openai/codex), git, Python 3.10+. Optional: the GitHub CLI (`gh`) for private repos, `bwrap` (bubblewrap) for the worker sandbox, and a Telegram bot.
+Requirements: [Claude Code](https://claude.com/claude-code), the [Codex CLI](https://github.com/openai/codex), git, Python 3.10+. Optional: the GitHub CLI (`gh`) for private repos, `bwrap` (bubblewrap) and `socat` for the worker sandbox (the default isolated worker network needs both), and a Telegram bot.
 
 ```bash
 git clone https://github.com/geenes/korolev && cd korolev
-./install.sh                    # links the skill for Claude Code and Codex, runs the preflight check
+./install.sh                    # links the skill for Claude Code and Codex, runs the preflight check (doctor.py)
 # optional: your own Telegram bot from @BotFather
 echo "<bot token>" | python3 skill/scripts/setup_telegram.py   # then send /start to your bot
 ```
 
-One install covers any number of projects.
+`doctor.py` checks Python, git, Codex and its model names, the GitHub login, the worker sandbox, free disk space, stray Git folders, attached projects and the Telegram setup, and prints PASS, WARN or FAIL for each. Run it any time. One install covers any number of projects.
 
 ## Use it
 
@@ -61,7 +61,7 @@ Start Claude Code in `~/korolev` and type:
 
 > korolev https://github.com/you/your-repo
 
-Korolev onboards the repo, writes or corrects the plan, gets two independent reviews, sends you the product questions, and stops for your go-ahead before building. Each project lives in `~/korolev/products/<name>/` (state, decisions, plan, reviews) with its own clone in `~/korolev/work/<name>/repo`.
+Korolev onboards the repo, writes or corrects the plan, gets two independent reviews, sends you the product questions, and stops for your go-ahead before building. Each project lives in `~/korolev/products/<name>/` (state, decisions, plan, reviews) with its own clone in `~/korolev/work/<name>/repo`. To start from a folder you already have, give its path instead of a link. Korolev works in its own clone of it; the folder itself is not used or changed. Answer on Telegram by replying to the bot's message (for example `1a 2b`); a free-text message can start with `project: `.
 
 Settings live in `~/.config/korolev/config.json`, for example `{"language": "en"}` (default English, also `ru`), `{"worker_sandbox": true}` and `{"isolate_codex_home": true}` (both on by default). Unattended resume is off unless you install with `./install.sh --with-resume`.
 
@@ -80,7 +80,7 @@ Korolev came out of one long day running two linked production projects with AI 
 
 ## What's inside
 
-`skill/SKILL.md` holds the coordinator procedure. `skill/scripts/` holds small standard-library Python tools: `onboard`, `run_codex`, `opinions`, `notify`, `inbox`, `lesson`, `release`, `privacy_scan`, `testcount`, `ci_wait`, `procs`, `sandbox`, `handoff`, `heartbeat`, `resume_watch` and `doctor`. There are no frameworks and nothing to host. See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
+`skill/SKILL.md` holds the coordinator procedure. `skill/scripts/` holds small standard-library Python tools: `onboard`, `baseline`, `tasks`, `run_codex`, `opinions`, `notify`, `inbox`, `lesson`, `release`, `privacy_scan`, `testcount`, `ci_wait`, `procs`, `sandbox`, `egress_proxy`, `handoff`, `heartbeat`, `resume_watch` and `doctor`. There are no frameworks and nothing to host. See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 ## Why "Korolev"?
 

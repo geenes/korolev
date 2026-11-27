@@ -4,13 +4,17 @@ import os
 import shlex
 import subprocess
 import sys
-import tempfile
 import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 from uuid import UUID
+
+if __package__:
+    from .git_fixture import git_fixture
+else:
+    from git_fixture import git_fixture
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skill' / 'scripts'
 ROOT = SCRIPTS.parent.parent
@@ -23,17 +27,17 @@ NOW = datetime(2026, 11, 25, 16, tzinfo=timezone.utc).timestamp()
 
 class ResumeTests(unittest.TestCase):
     def setUp(self):
-        self.base = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.base, self.env = self.enterContext(git_fixture())
         self.home = self.base / 'home'
         self.product = self.home / 'products' / 'demo'
         self.product.mkdir(parents=True)
         config_dir = self.base / 'config'
         config_dir.mkdir()
         # Exercise resume and limit handling with a fake Codex and no worker namespace.
-        (config_dir / 'config.json').write_text('{"worker_sandbox": false, "isolate_codex_home": false}\n')
+        (config_dir / 'config.json').write_text('{"worker_sandbox": false, "worker_network": "host", "isolate_codex_home": false}\n')
         self.bot = self.base / 'bot'
         self.user = self.base / 'user'
-        self.env = dict(os.environ, HOME=str(self.user), KOROLEV_HOME=str(self.home),
+        self.env.update(HOME=str(self.user), KOROLEV_HOME=str(self.home),
                         KOROLEV_CONFIG_DIR=str(config_dir), KOROLEV_BOT_STATE=str(self.bot))
         self.env.pop('KOROLEV_COORDINATOR_SESSION', None)
         self.env.pop('KOROLEV_COORDINATOR_PID', None)
@@ -344,15 +348,16 @@ class ResumeTests(unittest.TestCase):
         self.assertEqual(len(self.calls.read_text().splitlines()), 1)
         self.assertEqual(self.notifications, [])
 
-    def run_codex(self, output, code):
+    def run_codex(self, output, code, *, stderr=''):
         codex = self.base / 'codex'
         codex.write_text(f'#!{sys.executable}\nimport sys\nsys.stdin.read()\n'
-                         f'print({output!r}, file=sys.stderr)\nsys.exit({code})\n')
+                         f'output = {output!r}\nif output:\n    print(output)\n'
+                         f'sys.stderr.write({stderr!r})\nsys.exit({code})\n')
         codex.chmod(0o700)
         prompt = self.product / 'TASK.md'
         prompt.write_text('# A fake task')
         result = subprocess.run(
-            [sys.executable, '-I', str(SCRIPTS / 'run_codex.py'), '--role', 'analyst', '--product', 'demo',
+            [sys.executable, '-I', str(SCRIPTS / 'run_codex.py'), '--role', 'analyst', '--prompt-only', '--product', 'demo',
              '--cwd', str(self.base), '--prompt', str(prompt), '--out', 'HANDOFF.md'],
             env=dict(self.env, PATH=str(self.base)), capture_output=True, text=True, timeout=10,
         )
@@ -363,7 +368,6 @@ class ResumeTests(unittest.TestCase):
     def test_codex_limit_events_return_75_and_record_reset(self):
         cases = [
             json.dumps({'type': 'turn.failed', 'error': {'message': 'Usage limit reached; reset at 2030-01-02T17:00:00Z'}}),
-            f'Credit limit reached. resets {int(datetime(2030, 1, 2, 17, tzinfo=timezone.utc).timestamp())}',
             json.dumps({'type': 'error', 'code': 'usage_limit_reached', 'resets_at': '2030-01-02T17:00:00Z'}),
         ]
         for output in cases:
@@ -373,6 +377,33 @@ class ResumeTests(unittest.TestCase):
                 self.assertEqual(row['exit'], 75)
                 self.assertIs(row['limit_hit'], True)
                 self.assertEqual(row['retry_after'], '2030-01-02T17:00:00Z')
+
+    def test_codex_raw_limit_line_preserves_worker_exit(self):
+        reset = int(datetime(2030, 1, 2, 17, tzinfo=timezone.utc).timestamp())
+        code, row = self.run_codex('', 1, stderr=f'Credit limit reached. resets {reset}')
+        self.assertEqual(code, 1)
+        self.assertEqual(row['exit'], 1)
+        self.assertNotIn('limit_hit', row)
+        self.assertIs(row['limit_diagnostic'], True)
+        self.assertEqual(row['worker_exit'], 1)
+
+    def test_codex_provider_limit_events_only_count_on_stdout(self):
+        message = ('You’ve hit your usage limit. Visit https://example.invalid/usage to purchase more credits '
+                   'or try again at Dec 1st, 2030 4:15 PM.')
+        output = '\n'.join((
+            json.dumps({'type': 'error', 'message': message}),
+            json.dumps({'type': 'turn.failed', 'error': {'message': message}}),
+        ))
+        for stdout, stderr, expected in ((output, '', 75), ('', output, 1),
+                                         (output, json.dumps({'type': 'turn.completed'}), 75)):
+            with self.subTest(stdout=bool(stdout), stderr=bool(stderr)):
+                code, row = self.run_codex(stdout, 1, stderr=stderr)
+                self.assertEqual((code, row['exit'], row['worker_exit']), (expected, expected, 1))
+                self.assertEqual(row.get('limit_hit'), True if expected == 75 else None)
+                self.assertEqual(row.get('limit_diagnostic'), True if expected == 1 else None)
+                self.assertNotIn('retry_after', row)
+                if stderr:
+                    self.assertIn(stderr, Path(row['events']).read_text())
 
     def test_codex_agent_text_does_not_turn_an_unrelated_failure_into_limit(self):
         code, row = self.run_codex(json.dumps({'type': 'item.completed',

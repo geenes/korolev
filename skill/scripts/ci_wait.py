@@ -9,6 +9,9 @@ import tempfile
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from common import transport_environment, trusted_system_executable  # noqa: E402
+
 
 TESTCOUNT = Path(__file__).resolve().with_name('testcount.py')
 LOG_PREFIX = re.compile(r'^[^\t]+\t[^\t]+\t\d{4}-\d{2}-\d{2}T\S+Z(?: |$)')
@@ -20,8 +23,8 @@ PYTEST_COLLECTION = re.compile(r'collected (\d+) items?\b')
 
 
 def gh(*args, timeout=None):
-    return subprocess.run(['gh', *args], stdin=subprocess.DEVNULL, capture_output=True,
-                          encoding='utf-8', errors='replace', timeout=timeout)
+    return subprocess.run([trusted_system_executable('gh'), *args], stdin=subprocess.DEVNULL, capture_output=True,
+                          encoding='utf-8', errors='replace', timeout=timeout, env=transport_environment())
 
 
 def checked_output(result, command):
@@ -148,7 +151,7 @@ def main(argv=None):
     except RuntimeError as exc:
         verdict['error'] = str(exc)
     except OSError as exc:
-        verdict['error'] = f'could not run CI verification: {exc.strerror}'
+        verdict['error'] = f'could not run CI verification: {exc.strerror or exc}'
     except (KeyError, TypeError, ValueError):
         verdict['error'] = 'invalid response from gh or testcount.py'
     else:

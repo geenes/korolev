@@ -50,6 +50,16 @@ Write owner-facing text in the language set by `language` in `~/.config/korolev/
 
 It checks Codex, the GitHub CLI login, the Telegram config, `KOROLEV_HOME`, disk space and the model names. Fix or report anything marked FAIL before continuing. Telegram is optional: without it, ask questions in chat.
 
+## Offline migration for legacy product IDs
+
+Only needed when a script reports an invalid product name: project names now use only lowercase letters, digits and hyphens.
+
+1. Stop the coordinator, workers, queued dispatches and the resume timer. Back up the registry, product state and Git worktree metadata.
+2. Choose a lowercase ID matching `[a-z0-9][a-z0-9-]*`. Check that `projects.json` has no destination key. Inspect `products/<new>`, `work/<new>` and `tasks/<new>` and their parent roots before moving anything. Refuse existing destinations, including dangling symlinks, and verify the roots and source paths without following unexpected links.
+3. Move existing product and legacy work directories. Update `product.json` and the registry key and entry name. Update affected `folder`, `clone`, `git_common_dir` and any other moved absolute paths. Keep the owner checkout at its existing location if it is outside the moved directories.
+4. Relocate registered linked worktrees with `git worktree move` where supported. If paths were moved offline, repair the Git links from the main checkout with `git worktree repair <new-path> ...`. Update `tasks.json` and verify both sides of every link with `git worktree list --porcelain` and `git rev-parse --git-common-dir` from each task.
+5. Update the active product and affected working directory in `coordinator.json`, plus pending jobs, resume/session references and other live automation that names the old ID or paths. Start a fresh coordinator session if the recorded session still uses the old paths. Verify the registry and worktree paths before restarting workers or the timer.
+
 ## Phase 1: onboard a new project (repo link or path)
 
 1. **Init:** `python3 -I $SKILL/scripts/onboard.py init <repo-url-or-path> [--name <name>]`. It:
@@ -70,7 +80,7 @@ It checks Codex, the GitHub CLI login, the Telegram config, `KOROLEV_HOME`, disk
 5. **Second and third opinions (in the background):**
    `python3 -I $SKILL/scripts/opinions.py --product <name> --prompt $SKILL/templates/prompts/plan-review.md`
 
-   This runs Astra xhigh and Sol 5.6 xhigh in parallel, read-only, against the code and your `PLAN.md`. They write `OPINION-astra.md` and `OPINION-sol56.md`.
+   This runs Astra xhigh and Sol 5.6 xhigh in parallel, read-only, against the code and your `PLAN.md`. Use the `reports` mapping in the printed `products/<name>/review-round-*/manifest.json`. For each role, hash the report bytes you will read and compare the SHA-256 hex digest with `report_sha256[role]`. Reject missing or mismatched digests. For Git-less runs, pass `--prompt-only`.
 6. **Merge the opinions.** Revise `PLAN.md` and add a "Review log":
    - accepted findings;
    - rejected findings, with the reason for each;
@@ -125,7 +135,7 @@ Do one package at a time. For each package `NN-slug`:
    - grep the diff for secret patterns;
    - confirm that the test runner collected the new test files;
    - prove tests ran with `python3 -I $SKILL/scripts/testcount.py check <report>` on captured pytest JUnit XML, pytest terminal output, or Node test output. Use `--base <base-report>` to reject a drop in collected tests or an increase in skips when a baseline report is available. Use JUnit XML when pytest's quiet output omits collection details.
-4. **Sensitive packages** (money, auth, security): run `opinions.py` with `templates/prompts/code-review.md` on the commit before accepting.
+4. **Sensitive packages** (money, auth, security): run `opinions.py` with `templates/prompts/code-review.md`, `--sha <commit>` and `--context packages/NN-slug/TASK.md`. Check the SHA-256 digests in the manifest before relying on the reports.
 5. **Accept or reject:**
    - **Accept:** if push is delegated, push to the integration branch and verify the full remote SHA. Use that SHA for the hosted CI check before promotion. Update `STATE.md`.
    - **Reject:** write a fix `TASK.md`.
@@ -158,9 +168,10 @@ Korolev is a product too (`korolev`, the repo `geenes/korolev`). It improves thr
    This sends numbered proposals to the owner under "Korolev". Answers arrive in the inbox under project `korolev`. Record each answer with `lesson.py resolve <id> approved|rejected`.
 3. **Apply approved lessons** in Korolev's own clone (`onboard.py init https://github.com/geenes/korolev --name korolev`, once). Use the normal build loop: TASK, then builder, then verify. Run the tests (`python3 -m unittest discover -s tests`), then mark the lesson `applied`. **Commits stay local.**
 4. **Publishing a new version needs the owner's approval every time, and it is maintainer-only:**
-   - `release.py propose` runs `privacy_scan.py` on every outgoing commit. The scan blocks personal emails, home paths, secrets and the private terms in `~/.config/korolev/privacy.json`, and reports its findings redacted. If the scan is clean, it sends the owner the changes (what was added, changed and fixed, plus commits and files) and the privacy result on Telegram.
-   - When the owner replies, `release.py approve` records "a" (approved) or "b" (rejected).
-   - `release.py publish` runs only if all of these hold: the owner approved this exact commit and these exact notes; the privacy scan is still clean, including on the release commit and tag; and the tests pass. Then it pushes, waits for CI and creates the GitHub Release. Then it tells the owner.
+   - Run `release.py propose` to prepare and privacy-scan the exact release commit, annotated tag and notes. The coordinator runs the full test suite on the real host before proposing.
+   - Review the full SHA and the notes in Telegram. Reply to the proposal message with `a` to publish or `b` to reject within 24 hours. Run `release.py approve` to record the reply from the inbox.
+   - Run `release.py publish` to recheck privacy, run the tests, push main and the annotated tag atomically, and create the GitHub Release after CI passes for the approved commit. Rerun it within the approval window after a failure. It checks the destination before continuing.
+   - For a minor or major release, use `release.py propose --allow-minor` or `release.py propose --allow-major` to prepare the exact release for approval.
    - Only the maintainer can do this: the upstream origin, a maintainer GitHub login and a local `~/.config/korolev/maintainer.json` are all required. Other Korolev users improve their copy locally and contribute by pull request.
    - Never push Korolev changes any other way.
 5. **Hard limits:**

@@ -10,13 +10,17 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import urllib.request
+from itertools import combinations
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import BOT_STATE, HOME, SKILL, TELEGRAM_ENV, codex_home, isolate_codex_home, roles  # noqa: E402
+from common import (BOT_STATE, HOME, SKILL, TELEGRAM_ENV, codex_home, git_common_dir,  # noqa: E402
+                    isolate_codex_home, read_projects, roles, shared_remotes)
 import sandbox  # noqa: E402
 
+TEMP_SCAN_ROOT = Path('/')
 results = []
 
 
@@ -31,6 +35,65 @@ def cmd_ok(cmd):
         return out.returncode == 0, (out.stdout or out.stderr).strip().splitlines()[:1]
     except (OSError, subprocess.TimeoutExpired) as error:
         return False, [type(error).__name__]
+
+
+def check_stray_git():
+    temp_dirs = [TEMP_SCAN_ROOT / name for name in ('tmp', 'var/tmp', 'dev/shm')]
+    try:
+        temp_dirs.append(Path(tempfile.gettempdir()))
+    except FileNotFoundError:
+        pass
+
+    paths = {TEMP_SCAN_ROOT}
+    for directory in temp_dirs:
+        candidates = [directory]
+        try:
+            candidates.append(directory.resolve())
+        except (OSError, RuntimeError):
+            pass
+        for candidate in candidates:
+            paths.update(path for path in (candidate, *candidate.parents) if path.is_relative_to(TEMP_SCAN_ROOT))
+
+    for path in sorted(paths):
+        marker = path / '.git'
+        objects = path / 'objects'
+        if os.path.lexists(marker):
+            found = marker
+        # Mirror run_codex.plausible_git_metadata without importing the launcher.
+        elif (os.path.lexists(path / 'HEAD') and (os.path.lexists(objects) or os.path.lexists(path / 'commondir'))
+              or os.path.lexists(path / 'config') and objects.is_dir() and (path / 'refs').is_dir()):
+            found = path
+        else:
+            continue
+        report('WARN', 'stray Git metadata', f'Git discovery from temp folders may find {found}')
+
+
+def check_registry():
+    try:
+        projects = read_projects()
+    except (OSError, ValueError) as error:
+        report('WARN', 'project registry', str(error))
+        return
+    for name, entry in sorted(projects.items()):
+        folder = Path(entry['folder'])
+        if not folder.is_dir():
+            report('WARN', f'project {name}', f'attached folder is missing: {folder}')
+            continue
+        try:
+            current = git_common_dir(folder)
+        except (OSError, ValueError):
+            report('WARN', f'project {name}', f'Git common directory unavailable for {folder}')
+        else:
+            if str(current) != entry['git_common_dir']:
+                report('WARN', f'project {name}', f"Git common directory changed from {entry['git_common_dir']} to {current}")
+    for (name, entry), (other_name, other) in combinations(sorted(projects.items()), 2):
+        pair = f'projects {name} and {other_name}'
+        if entry['folder'] == other['folder']:
+            report('WARN', pair, f"share attached folder {entry['folder']}")
+        if entry['git_common_dir'] == other['git_common_dir']:
+            report('WARN', pair, f"share Git common directory {entry['git_common_dir']}")
+        for url in sorted(shared_remotes(entry, other)):
+            report('WARN', pair, f'share remote {url}')
 
 
 def main():
@@ -79,6 +142,8 @@ def main():
         report('PASS' if pct >= 15 else 'WARN', 'KOROLEV_HOME', f'{HOME} writable; {pct:.1f}% disk free')
     except OSError as error:
         report('FAIL', 'KOROLEV_HOME', f'{HOME}: {error}')
+    check_stray_git()
+    check_registry()
     for link in ('~/.claude/skills/korolev', '~/.codex/skills/korolev'):
         path = Path(link).expanduser()
         report('PASS' if path.exists() and path.resolve() == SKILL else 'WARN', f'skill installed at {link}',

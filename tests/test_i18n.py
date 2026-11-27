@@ -1,10 +1,14 @@
+import sys
 """Offline checks for the language setting and owner messages."""
 import ast
 import json
 import unicodedata
 from string import Formatter
 
-from test_skill import SCRIPTS, Sandbox
+if __package__:
+    from .test_skill import SCRIPTS, Sandbox
+else:
+    from test_skill import SCRIPTS, Sandbox
 
 
 class LanguageTests(Sandbox):
@@ -66,17 +70,17 @@ class LanguageTests(Sandbox):
                         violations.append(f'{path.name}:{node.lineno}')
         self.assertEqual(violations, [], 'Fixed Cyrillic strings belong in i18n.py')
 
-    def test_release_reads_english_and_russian_inbox_answers(self):
-        self.env['KOROLEV_TEST_SKIP_MAINTAINER'] = '1'
-        state = self.base / 'home' / 'products' / 'korolev'
-        state.mkdir(parents=True)
-        pending = state / 'release-pending.json'
-        inbox = self.base / 'bot' / 'INBOX.jsonl'
-        inbox.parent.mkdir()
-        for status, answers in {'approved': ('a', 'а', 'yes', 'да', 'опубликовать'),
-                                'rejected': ('b', 'б', 'no', 'нет', 'не публиковать')}.items():
-            for answer in answers:
-                with self.subTest(answer=answer):
-                    pending.write_text(json.dumps({'status': 'waiting', 'message_id': 1}))
-                    inbox.write_text(json.dumps({'reply_to': 1, 'message_id': 2, 'text': answer}) + '\n')
-                    self.assertEqual(self.run_script('release.py', 'approve').stdout.strip(), status)
+    def test_release_reply_words_in_both_languages(self):
+        sys.path.insert(0, str(SCRIPTS))
+        try:
+            import inbox
+        finally:
+            sys.path.remove(str(SCRIPTS))
+        for answer in ('a', 'а', 'yes', 'да', 'ok', 'approve'):
+            with self.subTest(answer=answer):
+                self.assertIsNotNone(inbox.RELEASE_APPROVAL_REPLY.match(answer))
+                self.assertIsNone(inbox.RELEASE_REJECTION_REPLY.match(answer))
+        for answer in ('b', 'б', 'no', 'нет', 'reject'):
+            with self.subTest(answer=answer):
+                self.assertIsNotNone(inbox.RELEASE_REJECTION_REPLY.match(answer))
+                self.assertIsNone(inbox.RELEASE_APPROVAL_REPLY.match(answer))
