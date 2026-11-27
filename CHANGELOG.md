@@ -2,6 +2,45 @@
 
 All notable changes to Korolev.
 
+## v0.3.3 (2026-11-27)
+
+v0.3.3 is the hardening release. Each of its protections is checked by a test on a real server: a worker can't read secrets, send data anywhere but the model provider, write outside its task folder, change Git history, push, or stop apps, and nothing it starts outlives its run. A review reads the exact commit it was asked about. A release goes out only for the exact commit and notes you approved, and only your own reply counts. A stop caused by a usage limit or a timeout is reported as that. One small package was also done end to end in a copy of a real project, from scan to review to landing.
+
+### Added
+- **Workers have no open internet**
+  - Why: A worker used to share the server's network, so a mistake or a bad instruction could send your code or data anywhere. Now the worker has no network of its own, and a small gatekeeper lets traffic through only to the model provider's addresses.
+- **Each protection is proven by a real attempt**
+  - Why: Earlier tests checked the sandbox settings. Now a worker really tries each forbidden thing in the real sandbox (reading a secret, writing outside its folder, changing Git history, pushing, reaching another process) and the test passes only if the attempt fails.
+- **Building blocks for working in a folder you already have**
+  - Why: Three new commands register an existing project folder (`onboard.py attach`), compare it read-only with its repository (`baseline.py scan` and `verify`), and create separate task folders for builders (`tasks.py`). The coordinator procedure in SKILL.md still works from a clone, so these are not yet a full workflow.
+- **Doctor checks for stray Git folders and attached projects**
+  - Why: A forgotten Git folder can confuse tools about which project they are in. Doctor now warns about those, and about attached projects whose folder went missing or that share a folder or remote.
+
+### Changed
+- **Release approval must be your whole reply**
+  - Why: You reply "a" or "yes" to the release message on Telegram. The message names the exact commit and the exact release notes. A sentence that merely starts with "ok" or "a" no longer counts, and only a reply sent after the release message is read.
+- **A release goes out only as approved**
+  - Why: Before publishing, Korolev checks that the commit and notes are still the ones you approved, reruns the privacy scan and the tests, then pushes the main branch and the version tag together. If the commit or the notes changed, you are asked again.
+- **Reviews read the exact commit**
+  - Why: Reviewers now check out the commit you name, in a private copy, instead of whatever happened to be in the folder.
+- **A worker's report lands only in the product folder**
+  - Why: A report path outside the product folder is refused before the worker starts.
+- **Project names use only lowercase letters, digits and hyphens**
+  - Why: Names with dots or underscores were accepted before and are now refused with "invalid product name". Rename an older project with the migration steps in SKILL.md.
+
+### Fixed
+- **Usage limits and timeouts are reported as such**
+  - Why: A stop is called a usage limit only when the model provider says so, and a timeout is reported as a timeout. Before, both could look like an ordinary failure.
+- **Waiting for your Telegram reply survives network hiccups**
+  - Why: A short connection failure or a "slow down" answer from Telegram used to end the wait. Korolev now retries. Only your own account is listened to.
+
+### Known limits
+- The Codex login file is visible inside the worker sandbox, because Codex needs it there to work.
+- Workers can reach the model provider's addresses, so anything a worker sends there still reaches the provider.
+- Toolchains installed under your home folder are hidden from workers, so a worker may test with the system's older runtime.
+- The coordinator runs the test suite on the server outside the sandbox, as before.
+- Onboarding a project in its own folder is not part of the documented procedure yet, even though the commands exist.
+
 ## v0.3.2 (2026-11-26)
 
 v0.3.2 is the first published release of the v0.3 line. The v0.3.0 and v0.3.1 tags exist but were never released: each failed CI on GitHub's test machine for a test-setup reason, and the release step stopped as designed. This version contains everything below.
