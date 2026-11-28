@@ -2,6 +2,30 @@
 
 All notable changes to Korolev.
 
+## v0.3.4 (2026-11-28)
+
+v0.3.4 makes reviews work with newer versions of Git. With newer Git (for example 2.56, the version on GitHub's test machine), every review refused to start, because the review copy compared Git's own bookkeeping files with the exact text older Git writes. The review copy is now a plain checkout of the exact commit, the code is about 330 lines shorter (about 900 with its tests), and the full test suite passes with Git 2.56 as well as 2.43.
+
+### Fixed
+- **Reviews start with newer Git**
+  - Why: With Git 2.56, every review stopped with "cannot verify the new review registration", because Korolev compared Git's bookkeeping files byte for byte with what older Git writes.
+- **A sandbox refusal says why**
+  - Why: Some refusals ended with exit code 78 and no message, so nobody could tell what went wrong.
+
+### Changed
+- **The review copy is a plain checkout of the exact commit**
+  - Why: The old review copy guarded against someone on the same account swapping folders in the middle of a run, which is outside what Korolev protects against. It cost about 330 lines of code (about 900 with its tests) and broke with newer Git. The new one checks out the exact commit without the source's settings, read-only for the reviewer, and removes itself afterwards.
+- **Review copies always go under the project's own work folder**
+  - Why: For a project that isn't registered, a review copy could be created next to wherever its work folder pointed.
+
+### Known limits
+- The Codex login file is visible inside the worker sandbox, because Codex needs it there to work.
+- Workers can reach the model provider's addresses, so anything a worker sends there still reaches the provider.
+- Toolchains installed under your home folder are hidden from workers, so a worker may test with the system's older runtime.
+- The coordinator runs the test suite on the server outside the sandbox, as before.
+- Onboarding a project in its own folder is not part of the documented procedure yet, even though the commands exist.
+- A review copy left behind by a crash stays until you delete its `review-*` folder in the project's work folder and run `git worktree prune`; it doesn't block the next review.
+
 ## v0.3.3 (2026-11-27)
 
 v0.3.3 is the hardening release. Each of its protections is checked by a test on a real server: a worker can't read secrets, send data anywhere but the model provider, write outside its task folder, change Git history, push, or stop apps, and nothing it starts outlives its run. A review reads the exact commit it was asked about. A release goes out only for the exact commit and notes you approved, and only your own reply counts. A stop caused by a usage limit or a timeout is reported as that. One small package was also done end to end in a copy of a real project, from scan to review to landing.
