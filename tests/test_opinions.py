@@ -194,6 +194,7 @@ sys.exit(opinions.main())
         (self.repo / 'tracked').write_text('New revision')
         self.git('commit', '-qam', 'newer')
         new = self.git('rev-parse', 'HEAD')
+        before = self.git('worktree', 'list', '--porcelain')
         fake = self.base / 'codex'
         fake.write_text(fake.read_text().replace('len(list(ready.iterdir())) < 2', 'len(list(ready.iterdir())) < 4'))
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -205,6 +206,8 @@ sys.exit(opinions.main())
             paths.append(self.assert_manifest(sha, result, 'same'))
         self.assertNotEqual(*paths)
         self.assertEqual(len(list(self.ready.iterdir())), 4)
+        self.assertEqual(self.git('worktree', 'list', '--porcelain'), before)
+        self.assertFalse(list(self.repo.parent.glob('review-*')))
 
     def test_failed_child_prevents_publication_even_when_other_child_succeeds(self):
         fake = self.base / 'codex'

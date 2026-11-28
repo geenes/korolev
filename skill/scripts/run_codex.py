@@ -16,7 +16,6 @@ Run it in the background: the coordinator wakes when it exits.
 """
 import argparse
 import ctypes
-import fcntl
 import hashlib
 import json
 import os
@@ -43,7 +42,7 @@ from common import (CONFIG_DIR, DEFAULT_ROLES, HOST_GIT_ENV, SKILL, append_line,
 from handoff import PRIVATE_KEY_BLOCK, TITLE, sections  # noqa: E402
 from onboard import sanitize_inventory  # noqa: E402
 from privacy_scan import EMAIL, HOME_PATH, SECRETS, load_config, redact  # noqa: E402
-from procs import LockBusyError, _start_time, run_lock  # noqa: E402
+from procs import LockBusyError, run_lock  # noqa: E402
 from resume_watch import limit_details  # noqa: E402
 import egress_proxy  # noqa: E402
 import sandbox  # noqa: E402
@@ -322,8 +321,8 @@ def bounded_git(folder, *args, executable, deadline, **kwargs):
         raise TimeoutError('review Git deadline expired') from error
 
 
-def review_git(git, folder, *args, error, env=None, fds=()):
-    result = git(folder, *args, env_overrides=env, pass_fds=fds)
+def review_git(git, folder, *args, error, env=None):
+    result = git(folder, *args, env_overrides=env)
     if result.returncode:
         raise OSError(error)
     return result.stdout.removesuffix(b'\n')
@@ -397,377 +396,56 @@ def code_review_prompt(prompt):
 
 
 @contextmanager
-def review_admin(directory, deadline=None):
-    # Git inherits the admin lock during registration and removal, including if the launcher is killed.
-    fd = os.open('.', DIRECTORY_FLAGS, dir_fd=directory)
-    try:
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if deadline is None:
-                    raise
-                time.sleep(min(0.05, review_remaining(deadline)))
-        yield fd
-    finally:
-        os.close(fd)
+def prompt_workspace():
+    root = Path('/tmp').resolve(strict=True)
+    if next(git_metadata_candidates(root), None):
+        raise OSError('the prompt workspace must have Git-free ancestry')
+    with tempfile.TemporaryDirectory(prefix='prompt-', dir=root) as directory:
+        yield Path(directory)
 
 
 @contextmanager
-def review_admin_view(lock, worktrees_fd):
-    # Git appends /worktrees to its common directory, with no separate
-    # override. Redirect that lookup before invoking any worktree command.
-    with (tempfile.TemporaryDirectory(dir='/tmp', prefix='korolev-review-git-') as directory,
-          open_directory(Path(directory)) as view_fd):
-        for name in ('config', 'objects', 'refs', 'packed-refs', 'shallow'):
-            (fd_path(view_fd) / name).symlink_to(fd_path(lock) / name)
-        (fd_path(view_fd) / 'worktrees').symlink_to(fd_path(worktrees_fd))
-        yield lock, worktrees_fd, view_fd
-
-
-def admin_git(git, lock, worktrees_fd, view_fd, *args, error, fds=()):
-    return review_git(git, fd_path(lock), '--git-dir=.', *args, error=error,
-                      env={'GIT_COMMON_DIR': str(fd_path(view_fd))}, fds=(lock, worktrees_fd, view_fd, *fds))
-
-
-def review_holder_gone(lease, boot, namespace):
-    pid, start, lease_boot, lease_namespace = (
-        lease[key] for key in ('pid', 'start_time', 'boot_id', 'pid_namespace'))
-    if (type(pid) is not int or pid <= 0 or type(start) is not int or start < 0
-            or not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', lease_boot)):
-        return False
-    if lease_boot != boot:
-        return True
-    if lease_namespace != namespace:
-        return False
-    try:
-        return _start_time(pid) != start
-    except FileNotFoundError:
-        with suppress(ProcessLookupError):
-            os.kill(pid, 0)
-            return False
-        return True
-
-
-def review_file(directory, path):
-    with open_context_file(directory, path) as (stream, info):
-        return bounded_read(stream, info)
-
-
-def review_inode(fd):
-    info = os.fstat(fd)
-    return [info.st_dev, info.st_ino]
-
-
-def checkout_pointer(checkout_fd):
-    return review_file(checkout_fd, Path('.git')).removesuffix(b'\n')
-
-
-def replace_review_pointer(directory, name, value):
-    with tempfile.NamedTemporaryFile(dir=fd_path(directory), prefix='pointer-', delete=False) as pointer:
-        pointer.write(os.fsencode(value) + b'\n')
-    os.replace(Path(pointer.name).name, name, src_dir_fd=directory, dst_dir_fd=directory)
-
-
-def move_review_entry(source, target, name, target_name):
-    # RENAME_NOREPLACE preserves an entry even if it appears during retirement.
-    libc = ctypes.CDLL(None, use_errno=True)
-    if libc.renameat2(source, os.fsencode(name), target, os.fsencode(target_name), 1):
-        error = ctypes.get_errno()
-        raise OSError(error, os.strerror(error), name)
-
-
-def retire_checkout(area, lease_fd, private_fd, retired, checkout_inode):
-    # Give Git a permanently absent target. Remember the transition so an
-    # interrupted deletion of a partially removed checkout can be retried.
-    replace_review_pointer(private_fd, 'gitdir', retired / '.git')
-    if os.path.lexists(fd_path(lease_fd) / area.name):
-        move_review_entry(lease_fd, lease_fd, area.name, 'retiring')
-    if os.path.lexists(fd_path(lease_fd) / 'retiring'):
-        with open_directory(Path('retiring'), parent=lease_fd) as checkout_fd:
-            if checkout_inode is not None and review_inode(checkout_fd) != checkout_inode:
-                raise OSError('retiring checkout changed; keeping the lease')
-            shutil.rmtree('retiring', dir_fd=lease_fd)
-
-
-def write_review_lease(lease_fd, lease):
-    with (fd_path(lease_fd) / 'lease.json').open('x') as stream:
-        stream.write(json.dumps(lease) + '\n')
-        stream.flush()
-        os.fsync(stream.fileno())
-
-
-def retirement_marker(name, lease_fd):
-    return '{}.{}.{}.json'.format(name, *review_inode(lease_fd))
-
-
-def retire_review_area(parent_fd, retirement_fd, name, lease_fd):
-    saved_lease = retirement_marker(name, lease_fd)
-    if set(os.listdir(lease_fd)) != {'lease.json'}:
-        raise OSError('unexpected review area contents; keeping the lease')
-    with egress_proxy.blocked_cleanup_signals():
-        if parent_fd != retirement_fd:
-            move_review_entry(parent_fd, retirement_fd, name, name)
-            try:
-                verify_directory(fd_path(retirement_fd) / name, lease_fd)
-            except OSError:
-                with suppress(FileExistsError):
-                    move_review_entry(retirement_fd, parent_fd, name, name)
-                raise
-        move_review_entry(lease_fd, retirement_fd, 'lease.json', saved_lease)
-        try:
-            os.rmdir(name, dir_fd=retirement_fd)
-        except OSError:
-            move_review_entry(retirement_fd, lease_fd, saved_lease, 'lease.json')
-            raise
-        os.unlink(saved_lease, dir_fd=retirement_fd)
-
-
-def clean_review(git, common, parent_fd, retirement_fd, area, admin, lease_fd, lease):
-    checkout = area / area.name
-    gitfile = checkout / '.git'
-    contents = fd_path(lease_fd)
-    lock, worktrees_fd, _ = admin
-    registered_path = fd_path(worktrees_fd) / area.name
-    retired = Path('/dev/null') / area.name
-    remove = partial(admin_git, git, *admin, 'worktree', 'remove', '--force', '--', retired,
-                     error='cannot remove the detached review worktree')
-    try:
-        verify_directory(fd_path(parent_fd) / area.name, lease_fd)
-        info = os.fstat(lease_fd)
-        if (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700
-                or lease['run_id'] != area.name or lease['common'] != str(common)
-                or lease.get('area_inode', review_inode(lease_fd)) != review_inode(lease_fd)
-                or lease.get('common_inode', review_inode(lock)) != review_inode(lock)
-                or lease.get('worktrees_inode', review_inode(worktrees_fd)) != review_inode(worktrees_fd)):
-            raise OSError('cannot verify review lease')
-        entries = set(os.listdir(lease_fd))
-        if entries - {'lease.json', 'git', area.name, 'retiring'}:
-            raise OSError('unexpected review area contents; keeping the lease')
-        if os.path.lexists(registered_path):
-            with open_directory(Path(area.name), parent=worktrees_fd) as private_fd:
-                backlink = review_file(private_fd, Path('gitdir')).removesuffix(b'\n')
-                retired_pointer = backlink == os.fsencode(retired / '.git')
-                if (not retired_pointer and backlink != os.fsencode(gitfile)
-                        or 'retiring' in entries and (not retired_pointer or area.name in entries)):
-                    raise OSError('cannot verify review registration')
-                if area.name in entries:
-                    with open_directory(Path(area.name), parent=lease_fd) as checkout_fd:
-                        pointer = checkout_pointer(checkout_fd)
-                        if pointer != b'gitdir: ' + os.fsencode(common / 'worktrees' / area.name):
-                            if 'pending_gitdir' not in lease or pointer != os.fsencode(lease['pending_gitdir']):
-                                raise OSError('cannot verify review checkout')
-                            verify_directory(common / 'worktrees', worktrees_fd)
-                        if lease.get('checkout_inode', review_inode(checkout_fd)) != review_inode(checkout_fd):
-                            raise OSError('review checkout changed; keeping the lease')
-                retire_checkout(area, lease_fd, private_fd, retired, lease.get('checkout_inode'))
-            try:
-                remove()
-            except TimeoutError:
-                raise
-            except OSError as error:
-                print(f'WARNING: {area.name}: {error}; attempting review cleanup fallback', file=sys.stderr)
-                # Prune is repository-wide, so only use it for a sole registration.
-                if registered_path.exists() and set(os.listdir(worktrees_fd)) == {area.name}:
-                    with suppress(OSError):
-                        admin_git(git, *admin, 'worktree', 'prune', '--expire=never', error='cannot prune Git worktrees')
-                if os.path.lexists(registered_path):
-                    remove()
-        elif 'common_inode' not in lease:
-            raise OSError('cannot verify the repository of an older review lease')
-        registered = admin_git(git, *admin, 'worktree', 'list', '--porcelain', '-z',
-                               error='cannot check review worktree registration')
-        if (b'worktree ' + os.fsencode(checkout) in registered.split(b'\0')
-                or os.path.lexists(registered_path) or any(os.path.lexists(contents / name)
-                                                         for name in (area.name, 'retiring'))):
-            raise OSError('review checkout or registration remains; keeping the lease')
-        if os.path.lexists(contents / 'git'):
-            with open_directory(Path('git'), parent=lease_fd) as metadata:
-                if set(os.listdir(metadata)) - {'.git'}:
-                    raise OSError('unexpected review metadata contents; keeping the lease')
-            shutil.rmtree('git', dir_fd=lease_fd)
-        retire_review_area(parent_fd, retirement_fd, area.name, lease_fd)
-    except (OSError, ValueError, KeyError, TypeError) as error:
-        print(f'WARNING: {area.name}: {error}', file=sys.stderr)
-
-
-def reclaim_reviews(git, root, root_fd, retirement_fd, common, boot, namespace, admin, deadline):
-    for parent_fd in (root_fd, retirement_fd):
-        for area in fd_path(parent_fd).glob('review-*'):
-            if area.suffix == '.json':
-                continue
-            review_remaining(deadline)
-            try:
-                with open_directory(Path(area.name), parent=parent_fd) as directory, review_admin(directory) as lease_fd:
-                    marker = None
-                    try:
-                        lease = json.loads(review_file(lease_fd, Path('lease.json')))
-                    except FileNotFoundError:
-                        if parent_fd != retirement_fd:
-                            continue
-                        marker = Path(retirement_marker(area.name, lease_fd))
-                        lease = json.loads(review_file(retirement_fd, marker))
-                    if isinstance(lease, dict) and lease.get('lock') == 'area' and review_holder_gone(lease, boot, namespace):
-                        if marker is not None:
-                            if lease.get('common') != str(common) or lease.get('common_inode') != review_inode(admin[0]):
-                                continue
-                            move_review_entry(retirement_fd, lease_fd, marker, 'lease.json')
-                        clean_review(git, common, parent_fd, retirement_fd, root / area.name, admin, lease_fd, lease)
-            except (OSError, ValueError, TypeError, KeyError, IndexError, OverflowError):
-                continue  # Live, legacy, or unverifiable lease.
-
-
-def populate_review(git, common_fd, lease_fd, checkout_fd, private_fd, sha):
-    # Populate through clean metadata to avoid filters from the source config.
-    storage = fd_path(lease_fd)
-    object_format = 'sha256' if len(sha) == 64 else 'sha1'
-    review_git(git, storage, 'init', '--quiet', '--template=', f'--object-format={object_format}', 'git',
-               fds=(lease_fd,), error='cannot initialize review checkout metadata')
-    review_git(git, fd_path(checkout_fd), f'--git-dir={storage / "git/.git"}', '--work-tree=.',
-               'read-tree', '--reset', '-u', sha, fds=(common_fd, lease_fd, private_fd, checkout_fd),
-               env={'GIT_OBJECT_DIRECTORY': str(fd_path(common_fd) / 'objects'),
-                    'GIT_INDEX_FILE': str(fd_path(private_fd) / 'index')},
-               error='cannot populate the detached review worktree')
-
-
-@contextmanager
-def prompt_workspace(root):
-    # Check the ancestry before tempfile can write anything, even during fallback.
-    candidates = (root, *(os.environ.get(key) for key in ('TMPDIR', 'TEMP', 'TMP')),
-                  '/tmp', '/var/tmp', '/usr/tmp')
-    for candidate in filter(None, candidates):
-        try:
-            parent = Path(candidate).resolve(strict=True)
-            if not parent.is_dir() or next(git_metadata_candidates(parent), None):
-                continue
-            temporary = tempfile.TemporaryDirectory(prefix='prompt-', dir=parent)
-        except (OSError, RuntimeError):
-            continue
-        with temporary as directory:
-            workspace = Path(directory)
-            if workspace.resolve(strict=True) != workspace or next(git_metadata_candidates(workspace), None):
-                raise OSError('the prompt workspace must have Git-free ancestry')
-            yield workspace
-            return
-    raise OSError('no writable temporary directory with Git-free ancestry for the prompt workspace')
-
-
-@contextmanager
-def review_worktree(product, source, revision, *, prompt_only=False, executable=None,
-                    expected_common=None, expected_common_fd=None, deadline=None, workspace_root=None):
-    source = source.resolve()
-    root = workspace_root or work_repo(product).parent.resolve()
-    if prompt_only:
-        with prompt_workspace(root) as directory:
-            yield directory, None, None, None, Path('.'), None, None
-        return
-    if deadline is None:
-        deadline = time.monotonic() + REVIEW_SETUP_SECONDS
-    executable = executable or trusted_git_executable()
-    git = partial(bounded_git, executable=executable, deadline=deadline)
+def review_worktree(source, revision, *, root, git, expected_common, expected_common_fd):
     prefix = Path(os.fsdecode(review_git(git, source, 'rev-parse', '--show-prefix',
                                         error='cannot locate the review source')))
     if prefix.is_absolute() or '..' in prefix.parts:
         raise OSError('invalid review source subdirectory')
     owner = source.parents[len(prefix.parts) - 1] if prefix.parts else source
     common, _ = review_common_dir(git, source)
+    info = common.stat()
+    if (not os.path.samestat(info, os.fstat(expected_common_fd))
+            or (expected_common is not None and not os.path.samestat(info, Path(expected_common).stat()))):
+        raise OSError('the review source belongs to a different Git repository')
     if root.is_relative_to(owner) or root.is_relative_to(common):
         raise OSError('review worktrees must be outside the source checkout')
-    boot, namespace = Path('/proc/sys/kernel/random/boot_id').read_text().strip(), os.readlink('/proc/self/ns/pid')
-    lease_owner, worker_lease = ExitStack(), ExitStack()
-    lease_fd = None
-    try:
-        common_fd = lease_owner.enter_context(open_directory(common))
-        info = os.fstat(common_fd)
-        if ((expected_common_fd is not None and not os.path.samestat(info, os.fstat(expected_common_fd)))
-                or (expected_common is not None and not os.path.samestat(info, Path(expected_common).stat()))):
-            raise OSError('the review source belongs to a different Git repository')
-        if expected_common_fd is not None:
-            common_fd = expected_common_fd
-        private = Path(os.fsdecode(review_git(git, source, 'rev-parse', '--absolute-git-dir',
-                                              error='cannot identify review metadata'))).resolve(strict=True)
-        if private != common and private.parent != common / 'worktrees':
-            raise OSError('the review source Git metadata is outside the common directory')
-        source_fd = common_fd if private == common else lease_owner.enter_context(open_directory(private))
-        if review_common_dir(git, source)[0] != common:
-            raise OSError('the review source Git identity changed')
-
-        def source_git(_folder, *args, **_options):
-            return git(fd_path(source_fd), '--git-dir=.', *args, pass_fds=tuple({source_fd, common_fd}),
-                       env_overrides={'GIT_COMMON_DIR': os.fspath(fd_path(common_fd))})
-
-        sha = resolve_review_sha(source, revision, git=source_git)
-        work_fd = lease_owner.enter_context(open_directory(root.parent, create=True))
-        with suppress(FileExistsError):
-            os.mkdir(root.name, mode=0o700, dir_fd=work_fd)
-        root_fd = lease_owner.enter_context(open_directory(Path(root.name), parent=work_fd))
-        with review_admin(common_fd, deadline) as lock, ExitStack() as setup:
-            verify_directory(common, common_fd)
-            verify_directory(root, root_fd)
-            worktrees_fd = lease_owner.enter_context(open_directory(Path('worktrees'), parent=lock, create=True))
-            verify_directory(common / 'worktrees', worktrees_fd)
-            with suppress(FileExistsError):
-                os.mkdir('.retired-reviews', mode=0o700, dir_fd=root_fd)
-            retirement_fd = lease_owner.enter_context(open_directory(Path('.retired-reviews'), parent=root_fd))
-            info = os.fstat(retirement_fd)
-            if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
-                raise OSError('review retirement storage must be private')
-            admin = setup.enter_context(review_admin_view(lock, worktrees_fd))
-            view = fd_path(admin[-1])
-            reclaim_reviews(git, root, root_fd, retirement_fd, common, boot, namespace, admin, deadline)
-            with egress_proxy.blocked_cleanup_signals():
-                name = Path(tempfile.mkdtemp(prefix='review-', dir=fd_path(root_fd))).name
-                area = root / name
-                directory = lease_owner.enter_context(open_directory(Path(name), parent=root_fd))
-                os.mkdir(name, mode=0o700, dir_fd=directory)
-                checkout_fd = lease_owner.enter_context(open_directory(Path(name), parent=directory))
-                pid = os.getpid()
-                lease = dict(run_id=name, pid=pid, start_time=_start_time(pid), boot_id=boot,
-                             pid_namespace=namespace, common=str(common), common_inode=review_inode(common_fd),
-                             worktrees_inode=review_inode(worktrees_fd), checkout_inode=review_inode(checkout_fd),
-                             area_inode=review_inode(directory),
-                             pending_gitdir=f'gitdir: {Path(os.readlink(view)) / "worktrees" / name}',
-                             lock='area')
-                lease_fd = worker_lease.enter_context(review_admin(directory))
-                write_review_lease(lease_fd, lease)
-            (view / name).symlink_to(fd_path(checkout_fd))
-            admin_git(git, *admin, '-c', 'worktree.useRelativePaths=false', 'worktree', 'add', '--quiet',
-                      '--detach', '--no-checkout', '--', view / name, sha,
-                      fds=(lease_fd, checkout_fd), error='cannot create the detached review worktree')
-            verify_directory(common, common_fd)
-            verify_directory(area, lease_fd)
-            checkout = area / name
-            verify_directory(checkout, checkout_fd)
-            durable = common / 'worktrees' / name
-            verify_directory(durable.parent, worktrees_fd)
-            private_fd = lease_owner.enter_context(open_directory(Path(name), parent=worktrees_fd))
-            verify_directory(durable, private_fd)
-            if (checkout_pointer(checkout_fd) != os.fsencode(lease['pending_gitdir'])
-                    or review_file(private_fd, Path('gitdir')).removesuffix(b'\n') != os.fsencode(checkout / '.git')
-                    or review_file(private_fd, Path('commondir')).removesuffix(b'\n') != b'../..'
-                    or review_file(private_fd, Path('HEAD')).removesuffix(b'\n') != sha.encode('ascii')):
-                raise OSError('cannot verify the new review registration')
-            replace_review_pointer(checkout_fd, '.git', f'gitdir: {durable}')
-            verify_linked_checkout(checkout_fd, fd_path(worktrees_fd) / name)
-            populate_review(git, common_fd, lease_fd, checkout_fd, private_fd, sha)
-            verify_directory(common, common_fd)
-            verify_directory(durable, private_fd)
-            verify_directory(checkout, checkout_fd)
-        yield checkout, sha, common, owner, prefix, (checkout_fd, common_fd, private_fd), lease_fd
-    finally:
-        with lease_owner, worker_lease:
-            if lease_fd is not None:
-                deadline = time.monotonic() + REVIEW_CLEANUP_SECONDS
-                git = partial(bounded_git, executable=executable, deadline=deadline)
+    sha = resolve_review_sha(source, revision, git=git)
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='review-', dir=root) as directory:
+        area = Path(directory)
+        checkout = area / area.name
+        try:
+            review_git(git, common, '--git-dir=.', '-c', 'worktree.useRelativePaths=false',
+                       'worktree', 'add', '--quiet', '--detach', '--no-checkout', '--', checkout, sha,
+                       error='cannot create the detached review worktree')
+            index = os.fsdecode(review_git(git, checkout, 'rev-parse', '--path-format=absolute', '--git-path', 'index',
+                                           error='cannot locate the detached review index'))
+            # Use clean metadata for checkout so source-configured filters cannot run.
+            object_format = 'sha256' if len(sha) == 64 else 'sha1'
+            review_git(git, area, 'init', '--quiet', '--template=', f'--object-format={object_format}', 'git',
+                       error='cannot initialize review checkout metadata')
+            review_git(git, checkout, f'--git-dir={area / "git/.git"}', '--work-tree=.',
+                       'read-tree', '--reset', '-u', sha,
+                       env={'GIT_OBJECT_DIRECTORY': str(common / 'objects'), 'GIT_INDEX_FILE': index},
+                       error='cannot populate the detached review worktree')
+            yield checkout, sha, common, owner, prefix
+        finally:
+            if checkout.exists():
+                cleanup_git = partial(git, deadline=time.monotonic() + REVIEW_CLEANUP_SECONDS)
                 try:
-                    # A sandbox reaper may still hold the inherited description.
-                    worker_lease.close()
-                    with (review_admin(directory, deadline) as lease_fd, review_admin(common_fd, deadline) as lock,
-                          review_admin_view(lock, worktrees_fd) as admin):
-                        clean_review(git, common, root_fd, retirement_fd, area, admin, lease_fd, lease)
+                    review_git(cleanup_git, common, '--git-dir=.', 'worktree', 'remove', '--force', '--', checkout,
+                               error='cannot remove the detached review worktree')
                 except OSError as error:
-                    print(f'WARNING: {area.name}: cannot lock review area for cleanup: {error}', file=sys.stderr)
+                    print(f'WARNING: {checkout}: {error}', file=sys.stderr)
 
 
 def usage_from(events_path, *, include_turns=False):
@@ -1475,27 +1153,6 @@ def run(args, role, pdir, cwd, write, resources, *, skill_fd, install_identity, 
     if git_backed and args.prompt_only:
         print('Worker sandbox failed: --prompt-only requires a source without a Git repository', file=sys.stderr)
         return 78
-    workspace_root = repo.parent if project is None else None
-    if git_backed and project is None:
-        legacy = Path(os.path.abspath(work_repo(args.product)))
-        try:
-            if os.path.lexists(legacy):
-                info = legacy.lstat()
-                legacy = workspace_root / legacy.name
-                if (not stat.S_ISDIR(info.st_mode) or not os.path.samestat(info, legacy.lstat())
-                        or legacy not in checkouts or checkouts[legacy][0] != legacy):
-                    raise OSError('cannot verify the legacy review checkout')
-                top = review_git(git, legacy, 'rev-parse', '--show-toplevel',
-                                 error='cannot verify the legacy review checkout')
-                if Path(os.fsdecode(top)).resolve() != legacy:
-                    raise OSError('cannot verify the legacy review checkout')
-                legacy_fd = checkouts[legacy][2]
-                if not os.path.samestat(os.fstat(legacy_fd), os.fstat(expected_common_fd)):
-                    raise OSError('the review source belongs to a different Git repository')
-                expected_common_fd = legacy_fd
-        except (OSError, RuntimeError, ValueError) as error:
-            print(f'Worker sandbox failed: {error}', file=sys.stderr)
-            return 78
     try:
         if requested_out.name in ('', '..') or normalized_name(requested_out.name) == 'product.json':
             raise ValueError('worker output must name a file outside reserved product metadata')
@@ -1544,7 +1201,7 @@ def run(args, role, pdir, cwd, write, resources, *, skill_fd, install_identity, 
     # The sandbox supplies the worker environment.
     env = {}
     egress_log = egress_fd = None
-    reviewed_sha = lease_fd = proc = None
+    reviewed_sha = proc = None
     sandbox_warnings = [sandbox.HOST_NETWORK_WARNING] if network == 'host' else []
     interrupted, interruptible = None, False
 
@@ -1568,7 +1225,6 @@ def run(args, role, pdir, cwd, write, resources, *, skill_fd, install_identity, 
             clone = cwd if task_workspace or not repo.is_dir() or (project is None and (git_backed or args.prompt_only)) else repo
             if (sandboxed or not write) and not cwd.is_relative_to(clone):
                 raise OSError(f'working directory is outside the project clone: {cwd}')
-            review_fds = review_cwd_fd = None
             if not write:
                 if (git_backed or project is not None) and not sandboxed:
                     raise OSError('Git reviews require the worker sandbox to hide the owner folder')
@@ -1578,23 +1234,25 @@ def run(args, role, pdir, cwd, write, resources, *, skill_fd, install_identity, 
                     # Keep the registered task's credential preflight for an
                     # explicit task selection, even though it will not be mounted.
                     sandbox.credential_masks(clone)
-                snapshot, reviewed_sha, review_common, source_root, relative, review_fds, lease_fd = worker_resources.enter_context(
-                    review_worktree(args.product, source, args.sha, prompt_only=args.prompt_only,
-                                    executable=git_executable, expected_common=common,
-                                    expected_common_fd=expected_common_fd, deadline=deadline,
-                                    workspace_root=workspace_root))
                 if git_backed:
-                    owner, common = owner or source_root, review_common
-                elif sandboxed and clone == repo:
-                    # Preserve the legacy clone preflight for prompt-only runs.
-                    sandbox.socket_masks({repo: ('--ro-bind', str(repo))}, on_budget_exceeded=(
-                        sandbox_warnings.append if network == 'isolated' else None))
+                    root = work_repo(args.product).parent.resolve()
+                    snapshot, reviewed_sha, common, source_root, relative = worker_resources.enter_context(
+                        review_worktree(source, args.sha, root=root, git=git, expected_common=common,
+                                        expected_common_fd=expected_common_fd))
+                    owner = owner or source_root
+                else:
+                    snapshot = worker_resources.enter_context(prompt_workspace())
+                    relative = Path('.')
+                    if sandboxed and clone == repo:
+                        # Preserve the legacy clone preflight for prompt-only runs.
+                        sandbox.socket_masks({repo: ('--ro-bind', str(repo))}, on_budget_exceeded=(
+                            sandbox_warnings.append if network == 'isolated' else None))
                 clone, cwd = snapshot, snapshot / relative
                 if not cwd.is_relative_to(clone) or not cwd.is_dir():
                     raise OSError('the working directory is unavailable in the reviewed commit')
-                if review_fds is not None:
-                    review_cwd_fd = worker_resources.enter_context(open_directory(relative, parent=review_fds[0]))
-                    verify_directory(cwd, review_cwd_fd)
+                if git_backed and relative.parts:
+                    with open_directory(cwd):
+                        pass
             cmd = ['codex', 'exec', '-C', str(cwd), '-m', model, '-c', f'model_reasoning_effort={effort}',
                    '-s', codex_mode, '--ephemeral', '--skip-git-repo-check', '--json']
             egress_proxy.prune_stale_sockets(run_storage)
@@ -1614,16 +1272,15 @@ def run(args, role, pdir, cwd, write, resources, *, skill_fd, install_identity, 
                 deliverable = outbox / 'deliverable.md'
                 git_metadata = worker_resources.enter_context(tempfile.TemporaryDirectory(dir='/tmp',
                                                                                            prefix='korolev-git-'))
-                checkout_fd = review_fds[0] if review_fds is not None else (
-                    staging_fd if staging is not None and staging[1] == clone
-                    else worker_resources.enter_context(sandbox.git_root(clone)))
+                checkout_fd = (staging_fd if staging is not None and staging[1] == clone
+                               else worker_resources.enter_context(sandbox.git_root(clone)))
                 layout = dict(clone=clone, product_dir=pdir, codex_home=worker_home, write=write,
                               outbox=outbox, context_dir=bundle, git_metadata_dir=git_metadata, config=config,
                               git_executable=git_executable, context_fd=bundle_fd, outbox_fd=outbox_fd)
                 if owner is not None:
                     layout.update(owner_folder=owner, git_common_dir=common)
                 if git_backed:
-                    layout.update(git_deadline=deadline, review_git_fds=review_fds[1:])
+                    layout['git_deadline'] = deadline
                 # Check the actual mount layout without invoking the worker CLI twice.
                 sandbox.selftest(**layout, check_version=False, checkout_fd=checkout_fd if git_backed else None)
                 proxy_socket = None
@@ -1649,9 +1306,6 @@ def run(args, role, pdir, cwd, write, resources, *, skill_fd, install_identity, 
                         exec "$@"
                     ''', 'verify-review-head', reviewed_sha, str(cwd), str(git_executable)]
                 mount_fds = sandbox.mount_fds(cmd, checkout_fd, bundle_fd, outbox_fd, *bind_fds)
-                if lease_fd is not None:
-                    cmd[1:1] = ['--sync-fd', str(lease_fd)]
-                    mount_fds += (lease_fd,)
             else:
                 verify_directory(out.parent, out_fd)
                 # Tool subprocesses can close inherited fds. The launcher keeps
@@ -1706,8 +1360,6 @@ def run(args, role, pdir, cwd, write, resources, *, skill_fd, install_identity, 
         if reviewed_sha is not None:
             try:
                 review_remaining(deadline)
-                verify_directory(clone, checkout_fd)
-                verify_directory(cwd, review_cwd_fd)
             except OSError as error:
                 print(f'Worker sandbox failed: {error}', file=sys.stderr)
                 return 78
@@ -1738,6 +1390,22 @@ def run(args, role, pdir, cwd, write, resources, *, skill_fd, install_identity, 
                     except SystemExit as error:
                         remember_interrupt(error)
     worker_exit = proc.returncode
+    if sandboxed and worker_exit == 78:
+        stderr_log.seek(0)
+        reason = None
+        # Report only fixed sandbox diagnostics. The private log keeps the full worker stderr.
+        for line in stderr_log:
+            line = line.rstrip(b'\r\n')
+            if line in (b'worker egress bridge cannot save stdin: fd 9 is in use',
+                        b'worker egress bridge failed to start',
+                        b'review checkout HEAD does not match the pinned commit'):
+                reason = line.decode('ascii')
+                break
+            if line.startswith(b'worker socket isolation could not start the command: '):
+                reason = 'worker socket isolation could not start the command'
+                break
+        message = f'Worker sandbox failed: {reason}' if reason else 'worker command exited 78 after sandbox preflight'
+        print(f'{message} (see {str(events)!r})', file=sys.stderr)
     receipt = dict(out_bytes=0, out_sha256=None)
     with worker_cleanup(remember_interrupt, set_interruptible):
         try:

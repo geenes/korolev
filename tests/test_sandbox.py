@@ -1,9 +1,7 @@
 import errno
-import fcntl
 import hashlib
 import json
 import os
-import select
 import shlex
 import shutil
 import signal
@@ -494,6 +492,7 @@ sandbox.worker_proxy = record_proxy_path
                 self.git('pack-refs', '--all', cwd=owner)
                 head = self.git('rev-parse', 'HEAD', cwd=owner).stdout.decode().strip()
                 self.git('replace', head, sha, cwd=owner)
+                self.git('config', 'core.autocrlf', 'true', cwd=owner)
                 self.make_executable(self.binary_dir / 'codex',
                                      f'marker={shlex.quote(str(marker))}\n'
                                      f'objects={shlex.quote(str(owner / ".git" / "objects"))}\n'
@@ -501,13 +500,11 @@ sandbox.worker_proxy = record_proxy_path
                     set -eux
                     test "$GIT_NO_REPLACE_OBJECTS" = 1
                     test ! -e "$marker"
-                    for fd in /proc/self/fd/*; do
-                        test "$(readlink "$fd" || :)" != "${PWD%/*}"
-                    done
                     test -d "$objects"
                     test "$(git rev-parse HEAD)" = "$sha"
                     test "$(git rev-parse --show-object-format)" = "$format"
                     test -z "$(git replace -l)"
+                    test -z "$(git config --local --get core.autocrlf || :)"
                     test "$(git show HEAD:visible.txt)" = 'pinned content'
                     test "$(cat visible.txt)" = 'pinned content'
                     if (touch checkout-write) 2>/dev/null; then exit 1; fi
@@ -523,158 +520,6 @@ sandbox.worker_proxy = record_proxy_path
 
     def test_real_bwrap_reviewer_cleans_up_after_failure_timeout_and_sigterm(self):
         self.check_review_cleanup(self.real_bwrap())
-
-    def test_real_bwrap_holds_review_lease_after_launcher_sigkill_until_worker_exits(self):
-        self.check_review_sigkill(direct_parent=False)
-
-    def test_real_bwrap_direct_parent_sigkill_stops_worker_before_reclaiming_review(self):
-        self.check_review_sigkill(direct_parent=True)
-
-    def check_review_sigkill(self, *, direct_parent):
-        from skill.scripts import run_codex
-
-        bwrap = self.real_bwrap()
-        shutil.rmtree(self.clone)
-        (self.config / 'config.json').write_text('{"worker_network": "host"}')
-        owner, sha = self.review_repo()
-        worker = r'''
-import fcntl, sys, time
-from pathlib import Path
-deliverable = Path(sys.argv[sys.argv.index('-o') + 1])
-out = deliverable.parent
-with (out / 'worker-lock').open('w') as lock:
-    fcntl.flock(lock, fcntl.LOCK_EX)
-    (out / 'pending').write_text(str(Path.cwd()))
-    (out / 'pending').rename(out / 'ready')
-    deadline = time.monotonic() + 60
-    while time.monotonic() < deadline:
-        if (out / 'shutdown').exists():
-            (out / 'draining').touch()
-        if (out / 'finish').exists():
-            deliverable.write_text('done\n')
-            break
-        time.sleep(0.01)
-    else:
-        raise SystemExit(99)
-'''
-        self.make_executable(self.binary_dir / 'codex', f'exec /usr/bin/python3 -I -c {shlex.quote(worker)} "$@"')
-        closed = self.base / 'supervisor-closed-fds'
-        exited = self.base / 'bwrap-exited'
-        direct_pid = self.base / 'bwrap-pid'
-        # Delay the parent-death notification without changing bubblewrap's
-        # actual argv. The supervisor drops every inherited fd after exec.
-        supervisor = f'''
-import os, subprocess, sys
-from pathlib import Path
-count = int(sys.argv[1])
-fds = tuple(map(int, sys.argv[2:2 + count]))
-child = subprocess.Popen(sys.argv[2 + count:], pass_fds=fds)
-for fd in fds:
-    os.close(fd)
-Path({str(closed)!r}).touch()
-code = child.wait()
-Path({str(exited)!r}).touch()
-sys.exit(code)
-'''
-        setup = f'''
-import subprocess
-popen = subprocess.Popen
-def delay_shutdown(argv, **kwargs):
-    if '--sync-fd' in argv:
-        fds = kwargs['pass_fds']
-        argv = [sys.executable, '-I', '-c', {supervisor!r}, str(len(fds)), *map(str, fds), *argv]
-    return popen(argv, **kwargs)
-subprocess.Popen = delay_shutdown
-'''
-        if direct_parent:
-            setup = f'''
-import subprocess
-from pathlib import Path
-popen = subprocess.Popen
-def identify_child(argv, **kwargs):
-    child = popen(argv, **kwargs)
-    if '--sync-fd' in argv:
-        assert argv[0] == {str(bwrap)!r}
-        Path({str(direct_pid)!r}).write_text(str(child.pid))
-    return child
-subprocess.Popen = identify_child
-'''
-        runs = self.product / '.runs'
-        task = self.product / 'TASK.md'
-        task.write_text('Synthetic lease test\n')
-
-        def wait_for(check, description):
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline:
-                if result := check():
-                    return result
-                time.sleep(0.01)
-            self.fail(description)
-
-        def launch(stack, name, setup=''):
-            existing = set(runs.glob('*-out/ready'))
-            cmd = self.launcher('run_codex.py', '--product', 'demo', '--role', 'analyst', '--prompt', str(task),
-                                '--out', name, '--cwd', str(owner), '--sha', sha, bwrap=bwrap, setup=setup)
-            proc = stack.enter_context(subprocess.Popen(cmd, env=self.env, stdout=subprocess.PIPE,
-                                                         stderr=subprocess.PIPE, text=True))
-            stack.callback(lambda: proc.kill() if proc.poll() is None else None)
-            ready, = wait_for(lambda: set(runs.glob('*-out/ready')) - existing, f'{name} did not start')
-            if not (direct_parent and setup):
-                stack.callback((ready.parent / 'finish').touch)
-            return proc, Path(ready.read_text().strip()), ready.parent
-
-        def registrations():
-            return self.git('worktree', 'list', '--porcelain', cwd=owner).stdout
-
-        with ExitStack() as stack, patch.object(run_codex, 'work_repo', return_value=self.clone):
-            first, abandoned, outbox = launch(stack, 'first.md', setup)
-            other, active, other_box = launch(stack, 'active.md')
-            if direct_parent:
-                pid = int(direct_pid.read_text())
-                self.assertIn(f'PPid:\t{first.pid}\n', Path(f'/proc/{pid}/status').read_text())
-                pid_fd = os.pidfd_open(pid)
-                stack.callback(os.close, pid_fd)
-                worker_lock = stack.enter_context((outbox / 'worker-lock').open('rb'))
-                with self.assertRaises(BlockingIOError):
-                    fcntl.flock(worker_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                self.assertIn(b'worktree ' + os.fsencode(abandoned) + b'\n', registrations())
-            else:
-                wait_for(closed.is_file, 'supervisor did not close its inherited descriptors')
-            first.kill()
-            self.assertEqual(first.wait(timeout=5), -signal.SIGKILL)
-            if direct_parent:
-                self.assertTrue(select.select([pid_fd], [], [], 5)[0], 'bubblewrap survived its parent')
-
-                def worker_exited():
-                    try:
-                        fcntl.flock(worker_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except BlockingIOError:
-                        return False
-                    return True
-
-                wait_for(worker_exited, 'sandboxed worker survived launcher and bubblewrap exit')
-                self.assertFalse((outbox / 'finish').exists())
-            else:
-                (outbox / 'shutdown').touch()
-                wait_for((outbox / 'draining').is_file, 'the sandboxed worker was not still shutting down')
-                with run_codex.review_worktree('demo', owner, sha):
-                    self.assertFalse(exited.exists())
-                    self.assertTrue((abandoned.parent / 'lease.json').is_file())
-                    self.assertEqual((abandoned / 'visible.txt').read_text(), 'pinned content\n')
-                    self.assertIn(b'worktree ' + os.fsencode(abandoned) + b'\n', registrations())
-                (outbox / 'finish').touch()
-                wait_for(exited.is_file, 'bubblewrap did not finish shutting down')
-            with run_codex.review_worktree('demo', owner, sha):
-                self.assertFalse(abandoned.parent.exists())
-                listing = registrations()
-                self.assertNotIn(b'worktree ' + os.fsencode(abandoned) + b'\n', listing)
-                self.assertIn(b'worktree ' + os.fsencode(active) + b'\n', listing)
-                self.assertEqual((active / 'visible.txt').read_text(), 'pinned content\n')
-                self.assertIsNone(other.poll())
-            (other_box / 'finish').touch()
-            stdout, stderr = other.communicate(timeout=10)
-            self.assertEqual(other.returncode, 0, stdout + stderr)
-        self.assert_review_cleaned(owner)
 
     def test_reviewer_cleans_up_after_failure_timeout_and_sigterm(self):
         self.fake_bwrap()
@@ -1166,7 +1011,7 @@ assert os.getcwd() == sys.argv[2]
     def lock_probe(self):
         codex = self.binary_dir / 'codex'
         codex.write_text(
-            f'#!{sys.executable}\n'
+            '#!/usr/bin/python3\n'  # The test runner's Python can be outside the sandbox mounts.
             'import os, stat, sys\n'
             'from pathlib import Path\n'
             'for fd in Path("/proc/self/fd").iterdir():\n'
@@ -1762,9 +1607,13 @@ print('sandbox checks passed')
                 self.assertEqual({path.name for path in projected.iterdir()},
                                  {'HEAD', 'config', 'objects', 'refs', 'worktrees'})
                 record, = (projected / 'worktrees').iterdir()
-                self.assertEqual({path.name for path in record.iterdir()}, {'HEAD', 'commondir', 'gitdir', 'index'})
+                source = common / 'worktrees' / record.name
+                expected = {'HEAD', 'commondir', 'gitdir', 'index'}
+                if (source / 'refs').is_dir():
+                    expected.add('refs')
+                self.assertEqual({path.name for path in record.iterdir()}, expected)
                 self.assertEqual((record / 'index').read_bytes(),
-                                 (common / 'worktrees' / record.name / 'index').read_bytes())
+                                 (source / 'index').read_bytes())
                 self.assertFalse(any(source.is_relative_to(common) for source in ro))
                 self.assertFalse(any(target.is_relative_to(common) and target != common for target in ro.values()))
                 self.assertEqual((projected / 'config').read_text().splitlines(),
@@ -1933,6 +1782,26 @@ print('sandbox checks passed')
         self.assertEqual(result.returncode, 78, result.stderr)
         self.assertIn('test namespace failure', result.stderr)
         self.assertIn('"worker_sandbox": false', result.stderr)
+        self.assertFalse((self.product / 'HANDOFF.md').exists())
+
+    def test_builder_reports_sandbox_refusal_after_preflight(self):
+        (self.config / 'config.json').write_text('{"worker_network": "host"}')
+        self.git('init', '-q', '-b', 'main')
+        codex = self.binary_dir / 'codex'
+        codex.write_text(f'#!{self.base / "missing-python"}\n')
+        helper = shlex.join(['/usr/bin/python3', '-I', str(SCRIPTS / 'worker_exec.py'), str(self.clone), '0'])
+        self.make_executable(self.binary_dir / 'bwrap',
+                             'while [ "$1" != -- ]; do shift; done\n'
+                             'shift\n'
+                             'case " $* " in\n'
+                             '  *" sandbox-selftest "*) echo "sandbox checks passed" ;;\n'
+                             f'  *) exec {helper} "$@" ;;\n'
+                             'esac\n')
+        result = self.worker(role='builder')
+        self.assertEqual(result.returncode, 78, result.stderr)
+        self.assertIn('worker socket isolation could not start the command', result.stderr)
+        events = Path(json.loads(result.stdout)['events'])
+        self.assertIn(os.strerror(errno.ENOENT), events.read_text())
         self.assertFalse((self.product / 'HANDOFF.md').exists())
 
     def test_zero_exit_without_a_selftest_result_is_a_failure(self):

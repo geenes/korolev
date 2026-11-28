@@ -20,10 +20,10 @@ from skill.scripts import onboard, run_codex
 
 if __package__:
     from .git_fixture import git_fixture
-    from .test_sandbox import EXECUTABLE_FIXTURE, fixture_executable_info
+    from .test_sandbox import EXECUTABLE_FIXTURE
 else:
     from git_fixture import git_fixture
-    from test_sandbox import EXECUTABLE_FIXTURE, fixture_executable_info
+    from test_sandbox import EXECUTABLE_FIXTURE
 
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skill' / 'scripts'
@@ -982,6 +982,18 @@ class TaskWorkerTests(unittest.TestCase):
                                  role='astra', sandboxed=True, owner=checkout)
         self.assertEqual(json.loads(result.stdout)['reviewed_sha'], sha)
 
+    def test_unregistered_review_keeps_checkout_outside_symlink_targets_parent(self):
+        (self.home / 'projects.json').unlink()
+        vendor = self.owner / 'vendor'
+        self.make_repo(vendor)
+        repo = self.home / 'work/demo/repo'
+        repo.parent.mkdir(parents=True)
+        repo.symlink_to(vendor, target_is_directory=True)
+
+        # Check while the review checkout still exists, before launcher cleanup.
+        self.worker(f'assert not list(Path({str(self.owner)!r}).glob("review-*"))',
+                    role='astra', sandboxed=True, owner=vendor)
+
     def test_checkout_and_state_case_aliases_refuse_before_mkdir(self):
         (self.home / 'projects.json').unlink()
         owner = self.owner.rename(self.product / 'owner')
@@ -1170,14 +1182,16 @@ common.trusted_git_executable = sandbox.trusted_git_executable = pin_once
         task = self.new_task()
         self.git('-c', 'user.name=Test', '-c', 'user.email=test@example.test',
                  'commit', '--allow-empty', '-qm', 'task-only commit', cwd=task)
+        self.git('config', 'core.autocrlf', 'true')
         for source in (self.owner, task):
             (source / 'untracked').write_text('Private fixture')
             (source / 'tracked').write_text('Dirty tracked file\n')
         git = shutil.which('git', path=self.env['PATH'])
         body = f'''
 assert not (cwd / 'untracked').exists()
-assert (cwd / 'tracked').read_text() == 'tracked\\n'
+assert (cwd / 'tracked').read_bytes() == b'tracked\\n'
 assert subprocess.check_output([{git!r}, 'rev-parse', 'HEAD'], cwd=cwd, text=True).strip() == {self.head!r}
+assert subprocess.check_output([{git!r}, 'show', 'HEAD:tracked'], cwd=cwd) == b'tracked\\n'
 assert subprocess.run([{git!r}, 'symbolic-ref', '-q', 'HEAD'], cwd=cwd).returncode == 1
 '''
         for options in ((), ('--task', '19-task')):
@@ -1203,24 +1217,6 @@ assert subprocess.run([{git!r}, 'symbolic-ref', '-q', 'HEAD'], cwd=cwd).returnco
         legacy = self.home / 'work/demo/repo'
         legacy.parent.mkdir(parents=True)
         self.git('worktree', 'add', '--detach', legacy)
-        unrelated = self.base / 'unrelated'
-        self.make_repo(unrelated)
-        report = self.product / 'new-reports' / 'result.md'
-        before = self.git('worktree', 'list', '--porcelain', cwd=unrelated)
-        result = self.worker('', '--cwd', str(unrelated), '--out', str(report), role='astra',
-                             sandboxed=True, exit_code=78, setup='''
-import subprocess
-git = subprocess.run
-def reject_registration(cmd, **kwargs):
-    assert 'worktree' not in cmd
-    return git(cmd, **kwargs)
-subprocess.run = reject_registration
-''')
-        self.assertIn('different Git repository', result.stderr)
-        self.assertEqual(self.git('worktree', 'list', '--porcelain', cwd=unrelated), before)
-        self.assertFalse(list(legacy.parent.glob('review-*')))
-        self.assertFalse(report.parent.exists())
-        self.assertFalse((self.product / '.runs').exists())
         nested = self.owner / 'deep' / 'nested'
         nested.mkdir(parents=True)
         (nested / 'file').write_text('tracked subdirectory')
@@ -1242,75 +1238,6 @@ subprocess.run = reject_registration
                                      owner=self.owner if source == alias else linked)
                 self.assertEqual(json.loads(result.stdout)['reviewed_sha'], self.head)
                 self.assertEqual(self.git('worktree', 'list', '--porcelain'), before)
-
-    def test_legacy_review_pins_common_directory_at_admission(self):
-        (self.home / 'projects.json').unlink()
-        legacy = self.home / 'work/demo/repo'
-        legacy.parent.mkdir(parents=True)
-        self.make_repo(legacy)
-        other = self.base / 'other'
-        self.make_repo(other)
-        before = set((other / '.git').iterdir())
-        listing = self.git('worktree', 'list', '--porcelain', cwd=other)
-        setup = f'''
-import os
-from pathlib import Path
-legacy, other = Path({str(legacy)!r}), Path({str(other)!r})
-open_fd = os.open
-rebound = False
-def rebind_at_admission(name, flags, *args, dir_fd=None, **kwargs):
-    global rebound
-    fd = open_fd(name, flags, *args, dir_fd=dir_fd, **kwargs)
-    if name == '.git' and flags & os.O_DIRECTORY and not rebound:
-        if Path(os.readlink(f'/proc/self/fd/{{fd}}')) == legacy / '.git':
-            rebound = True
-            (legacy / '.git').rename(legacy.parent / 'original.git')
-            (other / '.git').rename(legacy / '.git')
-    return fd
-os.open = rebind_at_admission
-'''
-        result = self.worker('raise AssertionError("worker started")', '--cwd', str(legacy),
-                             role='astra', sandboxed=True, setup=setup, exit_code=78)
-        self.assertIn('different Git repository', result.stderr)
-        self.assertTrue((legacy.parent / 'original.git').is_dir())
-        self.assertFalse(list(legacy.parent.glob('review-*')))
-        (legacy / '.git').rename(other / '.git')
-        self.assertEqual(set((other / '.git').iterdir()), before)
-        self.assertEqual(self.git('worktree', 'list', '--porcelain', cwd=other), listing)
-
-    def test_legacy_review_refuses_unverifiable_lexical_slots(self):
-        (self.home / 'projects.json').unlink()
-        legacy = self.home / 'work/demo/repo'
-        legacy.parent.mkdir(parents=True)
-        report = self.product / 'new-reports' / 'result.md'
-        marker = self.base / 'worker-started'
-        setup = '''
-import subprocess
-git = subprocess.run
-def forbid_admin(cmd, **kwargs):
-    assert 'worktree' not in cmd
-    return git(cmd, **kwargs)
-subprocess.run = forbid_admin
-'''
-        for kind in ('file', 'dangling link', 'gitless directory'):
-            with self.subTest(kind=kind):
-                if kind == 'file':
-                    legacy.write_text('occupied')
-                elif kind == 'dangling link':
-                    legacy.symlink_to(self.base / 'absent')
-                else:
-                    legacy.mkdir()
-                result = self.worker(f'Path({str(marker)!r}).touch()', '--cwd', str(self.owner),
-                                     '--out', str(report), role='astra', sandboxed=True, setup=setup, exit_code=78)
-                self.assertIn('cannot verify the legacy review checkout', result.stderr)
-                self.assertEqual(list(legacy.parent.iterdir()), [legacy])
-                self.assertFalse(report.parent.exists())
-                self.assertFalse((self.product / '.runs').exists())
-                self.assertFalse(marker.exists())
-                if kind == 'gitless directory':
-                    legacy.rmdir()
-                else:
-                    legacy.unlink()
 
     def test_damaged_bare_repo_refuses_prompt_admission_and_report_output(self):
         (self.home / 'projects.json').unlink()
@@ -1503,12 +1430,9 @@ def verify_git_environment(cmd, **kwargs):
     if Path(cmd[0]).name == 'git':
         env = kwargs['env']
         present = inherited.keys() & env.keys()
-        # Snapshot setup supplies its own Git locations through open descriptors.
-        if 'GIT_COMMON_DIR' in present and '--git-dir=.' in cmd:
-            assert env['GIT_COMMON_DIR'] in {{'.', *(f'/proc/self/fd/{{fd}}' for fd in kwargs['pass_fds'])}}
-            present.remove('GIT_COMMON_DIR')
         if 'GIT_INDEX_FILE' in present and 'read-tree' in cmd:
-            assert env['GIT_INDEX_FILE'] in {{f'/proc/self/fd/{{fd}}/index' for fd in kwargs['pass_fds']}}
+            index = Path(env['GIT_INDEX_FILE'])
+            assert index.is_absolute() and index.parent.parent.name == 'worktrees' and index.name == 'index'
             present.remove('GIT_INDEX_FILE')
         assert not present
         if '--resolve-git-dir' in cmd:
@@ -1572,294 +1496,6 @@ subprocess.run = verify_git_environment
                     self.assertIn('outside the checkout, owner folder and Git metadata', refused.stderr)
                     self.assertFalse(reports.exists())
 
-    def test_review_reclaims_only_abandoned_leases_while_another_review_is_active(self):
-        root = self.home / 'work' / 'demo'
-        with patch.object(run_codex, 'work_repo', return_value=root / 'repo'), \
-                patch.object(run_codex.sandbox, 'executable_info', fixture_executable_info):
-            with run_codex.review_worktree('demo', self.owner, self.head) as (active, *_):
-                lease_path = active.parent / 'lease.json'
-                lease = json.loads(lease_path.read_text())
-                lease['boot_id'] = '00000000-0000-0000-0000-000000000000'
-                lease_path.write_text(json.dumps(lease))
-                script = f'''
-import sys, time
-from pathlib import Path
-sys.path.insert(0, {str(SCRIPTS)!r})
-import sandbox
-{EXECUTABLE_FIXTURE}
-from run_codex import review_worktree
-with review_worktree('demo', Path({str(self.owner)!r}), {self.head!r}) as (checkout, *_):
-    print(checkout, flush=True)
-    time.sleep(60)
-'''
-                with subprocess.Popen([sys.executable, '-I', '-c', script], env=self.env, stdout=subprocess.PIPE,
-                                      text=True) as child:
-                    try:
-                        abandoned = Path(child.stdout.readline().strip())
-                        self.assertTrue(abandoned.is_dir())
-                    finally:
-                        child.kill()
-                        self.assertEqual(child.wait(timeout=5), -signal.SIGKILL)
-                unverified = root / 'review-unverified'
-                unverified.mkdir(mode=0o700)
-                legacy_checkout = unverified / unverified.name
-                self.git('worktree', 'add', '--detach', legacy_checkout)
-                legacy_lease = {key: value for key, value in lease.items() if key != 'lock'}
-                (unverified / 'lease.json').write_text(json.dumps(dict(legacy_lease, run_id=unverified.name)))
-                with run_codex.review_worktree('demo', self.owner, self.head) as (new, *_):
-                    self.assertNotEqual(active.name, new.name)
-                    self.assertTrue(active.is_dir())
-                    self.assertTrue(legacy_checkout.is_dir())
-                    self.assertFalse(abandoned.parent.exists())
-                    worktrees = self.git('worktree', 'list', '--porcelain')
-                    for path in (active, new):
-                        self.assertIn(f'worktree {path}\n', worktrees)
-                    self.assertNotIn(f'worktree {abandoned}\n', worktrees)
-
-    def test_cleanup_error_attempts_prune_and_preserves_worker_exit_and_usage(self):
-        before = self.git('worktree', 'list', '--porcelain')
-        for prune_succeeds in (True, False):
-            with self.subTest(prune_succeeds=prune_succeeds):
-                self.check_remove_fallback(prune_succeeds)
-                self.assertEqual(self.git('worktree', 'list', '--porcelain'), before)
-                self.assertFalse(list((self.home / 'work/demo').glob('review-*')))
-
-    def check_remove_fallback(self, prune_succeeds):
-        setup = f'''
-import subprocess
-from pathlib import Path
-git = subprocess.run
-removals = 0
-def fail_remove(cmd, **kwargs):
-    global removals
-    args = list(cmd)
-    if 'worktree' in args:
-        action = args[args.index('worktree') + 1]
-        if action == 'remove':
-            removals += 1
-            if removals == 1:
-                assert not Path(cmd[-1]).exists()
-                return subprocess.CompletedProcess(args, 1)
-            assert not Path(cmd[-1]).exists()
-        if action == 'prune':
-            assert not list(Path({str(self.home / "work/demo")!r}).glob('review-*/review-*'))
-            Path({str(self.base / "pruned")!r}).touch()
-            if not {prune_succeeds!r}:
-                return subprocess.CompletedProcess(args, 0, stdout=b'')
-    return git(cmd, **kwargs)
-subprocess.run = fail_remove
-'''
-        result = self.worker('sys.exit(19)', '--sha', self.head, role='analyst', exit_code=19,
-                             sandboxed=True, setup=setup)
-        self.assertIn('attempting review cleanup fallback', result.stderr)
-        self.assertTrue((self.base / 'pruned').is_file())
-        (self.base / 'pruned').unlink()
-        record = json.loads((self.product / 'USAGE.jsonl').read_text().splitlines()[-1])
-        self.assertEqual((record['reviewed_sha'], record['exit']), (self.head, 19))
-
-    def test_admin_uses_pinned_repository_after_linked_source_path_is_replaced(self):
-        source = self.base / 'linked'
-        self.git('worktree', 'add', '--detach', source)
-        second = self.base / 'second'
-        self.make_repo(second)
-        (second / 'tracked').write_text('other repository')
-        self.git('-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-qam', 'other', cwd=second)
-        second_before = self.git('worktree', 'list', '--porcelain', cwd=second)
-        original = run_codex.admin_git
-        root = self.home / 'work/demo'
-
-        def change_binding(git, lock, *args, **kwargs):
-            if 'add' in args:
-                source.rename(self.base / 'saved-source')
-                second.rename(source)
-            if 'remove' in args or 'prune' in args:
-                raise OSError('injected cleanup failure')
-            return original(git, lock, *args, **kwargs)
-
-        with patch.object(run_codex, 'work_repo', return_value=root / 'repo'):
-            with patch.object(run_codex, 'admin_git', side_effect=change_binding):
-                with run_codex.review_worktree('demo', source, None, expected_common=self.owner / '.git') as (checkout, *_):
-                    self.assertEqual((checkout / 'tracked').read_text(), 'tracked\n')
-                    self.assertIn(f'worktree {checkout}\n', self.git('worktree', 'list', '--porcelain'))
-                    self.assertEqual(self.git('rev-parse', 'HEAD', cwd=checkout).strip(), self.head)
-            self.assertEqual(self.git('worktree', 'list', '--porcelain', cwd=source).replace(str(source), str(second)),
-                             second_before)
-            common = self.owner / '.git'
-            self.assertTrue((common / 'worktrees' / checkout.name).is_dir())
-            self.abandon_review(checkout.parent)
-            with run_codex.review_worktree('demo', self.owner, self.head):
-                self.assertFalse(checkout.parent.exists())
-                self.assertFalse((common / 'worktrees' / checkout.name).exists())
-            self.assertEqual(self.git('worktree', 'list', '--porcelain', cwd=source).replace(str(source), str(second)),
-                             second_before)
-
-    def abandon_review(self, area):
-        path = area / 'lease.json'
-        lease = json.loads(path.read_text())
-        lease['boot_id'] = '00000000-0000-0000-0000-000000000000'
-        path.write_text(json.dumps(lease))
-
-    def test_review_cleanup_waits_for_inherited_lease_to_close(self):
-        root = self.home / 'work/demo'
-        with patch.object(run_codex, 'work_repo', return_value=root / 'repo'):
-            with ExitStack() as stack, patch.object(run_codex, 'REVIEW_CLEANUP_SECONDS', 0.1):
-                with run_codex.review_worktree('demo', self.owner, self.head) as (checkout, *_, lease_fd):
-                    stack.callback(os.close, os.dup(lease_fd))
-                self.assertTrue((checkout.parent / 'lease.json').is_file())
-                self.assertIn(f'worktree {checkout}\n', self.git('worktree', 'list', '--porcelain'))
-            self.abandon_review(checkout.parent)
-            with run_codex.review_worktree('demo', self.owner, self.head):
-                self.assertFalse(checkout.parent.exists())
-
-    def test_review_refuses_rebound_common_path_after_real_git_registration(self):
-        second = self.base / 'second'
-        self.make_repo(second)
-        common = self.owner / '.git'
-        saved = self.base / 'saved.git'
-        root = self.home / 'work/demo'
-        before = self.git('worktree', 'list', '--porcelain', cwd=second)
-        original = run_codex.admin_git
-
-        def replace_common(git, lock, *args, **kwargs):
-            if 'add' in args:
-                common.rename(saved)
-                (second / '.git').rename(common)
-            return original(git, lock, *args, **kwargs)
-
-        with patch.object(run_codex, 'work_repo', return_value=root / 'repo'):
-            with patch.object(run_codex, 'admin_git', side_effect=replace_common):
-                with self.assertRaisesRegex(OSError, 'directory changed'), run_codex.review_worktree(
-                        'demo', self.owner, self.head, expected_common=common):
-                    self.fail('review accepted rebound durable metadata')
-            self.assertFalse((common / 'worktrees').exists())
-            area, = root.glob('review-*')
-            checkout = area / area.name
-            self.assertTrue((saved / 'worktrees' / area.name).is_dir())
-            common.rename(second / '.git')
-            self.assertEqual(self.git('worktree', 'list', '--porcelain', cwd=second), before)
-            saved.rename(common)
-            self.git('worktree', 'repair', str(checkout))
-            self.abandon_review(area)
-            with run_codex.review_worktree('demo', self.owner, self.head):
-                self.assertFalse(area.exists())
-            with run_codex.review_worktree('demo', self.owner, self.head) as (checkout, *_):
-                common.rename(saved)
-                (second / '.git').rename(common)
-            self.assertFalse(checkout.parent.exists())
-            self.assertFalse((saved / 'worktrees' / checkout.name).exists())
-            self.assertFalse((common / 'worktrees').exists())
-            common.rename(second / '.git')
-            self.assertEqual(self.git('worktree', 'list', '--porcelain', cwd=second), before)
-            saved.rename(common)
-
-    def test_review_administration_refuses_symlinks_and_keeps_pinned_worktrees(self):
-        worktrees = self.owner / '.git/worktrees'
-        foreign_repo = self.base / 'foreign'
-        self.make_repo(foreign_repo)
-        foreign_checkout = self.base / 'foreign-checkout'
-        self.git('worktree', 'add', '--detach', foreign_checkout, cwd=foreign_repo)
-        foreign = foreign_repo / '.git/worktrees'
-        before = {path.relative_to(foreign): path.read_bytes() for path in foreign.rglob('*') if path.is_file()}
-        root = self.home / 'work/demo'
-        original = run_codex.admin_git
-
-        def swap_worktrees(git, lock, *args, **kwargs):
-            if 'add' in args:
-                worktrees.rename(worktrees.with_name('saved-worktrees'))
-                foreign.rename(worktrees)
-            return original(git, lock, *args, **kwargs)
-
-        with patch.object(run_codex, 'work_repo', return_value=root / 'repo'):
-            worktrees.symlink_to(foreign, target_is_directory=True)
-            with self.assertRaises(OSError), run_codex.review_worktree('demo', self.owner, self.head):
-                self.fail('Git accepted a pre-existing administrative symlink')
-            self.assertFalse(list(root.glob('review-*')))
-            worktrees.unlink()
-            with patch.object(run_codex, 'admin_git', side_effect=swap_worktrees):
-                with self.assertRaisesRegex(OSError, 'directory changed'):
-                    with run_codex.review_worktree('demo', self.owner, self.head):
-                        self.fail('Git accepted a rebound administrative directory')
-            area, = root.glob('review-*')
-            self.assertTrue((area / 'lease.json').is_file())
-            self.assertTrue((worktrees.with_name('saved-worktrees') / area.name / 'HEAD').is_file())
-            self.assertEqual({path.relative_to(worktrees): path.read_bytes()
-                              for path in worktrees.rglob('*') if path.is_file()}, before)
-            worktrees.rename(foreign)
-            worktrees.with_name('saved-worktrees').rename(worktrees)
-            self.abandon_review(area)
-            with run_codex.review_worktree('demo', self.owner, self.head) as (checkout, *_):
-                self.assertFalse(area.exists())
-                self.assertEqual(self.git('rev-parse', 'HEAD', cwd=checkout).strip(), self.head)
-                self.assertIn(f'worktree {checkout}\n', self.git('worktree', 'list', '--porcelain'))
-            self.assertEqual(list(worktrees.iterdir()), [])
-
-    def test_review_checkout_population_uses_the_registered_inode(self):
-        saved = self.base / 'registered-checkout'
-        root = self.home / 'work/demo'
-        populate = run_codex.populate_review
-
-        def swap_before_population(git, common_fd, lease_fd, checkout_fd, private_fd, sha):
-            checkout = Path(os.readlink(run_codex.fd_path(checkout_fd)))
-            checkout.rename(saved)
-            checkout.mkdir()
-            (checkout / 'foreign').write_text('replacement')
-            return populate(git, common_fd, lease_fd, checkout_fd, private_fd, sha)
-
-        with patch.object(run_codex, 'work_repo', return_value=root / 'repo'):
-            with patch.object(run_codex, 'populate_review', side_effect=swap_before_population):
-                with self.assertRaisesRegex(OSError, 'directory changed'):
-                    with run_codex.review_worktree('demo', self.owner, self.head):
-                        self.fail('accepted the replacement checkout')
-            area, = root.glob('review-*')
-            self.assertEqual(list((area / area.name).iterdir()), [area / area.name / 'foreign'])
-            self.assertEqual((saved / 'tracked').read_text(), 'tracked\n')
-            self.assertTrue((area / 'lease.json').is_file())
-            (area / area.name).rename(self.base / 'replacement')
-            saved.rename(area / area.name)
-            self.abandon_review(area)
-            with run_codex.review_worktree('demo', self.owner, self.head):
-                self.assertFalse(area.exists())
-
-    def test_review_checkout_substitution_before_preflight_and_launch_refuses_worker(self):
-        before = self.git('worktree', 'list', '--porcelain')
-        for phase in ('preflight', 'launch'):
-            with self.subTest(phase=phase):
-                setup = f'''
-from pathlib import Path
-preflight, wrap = sandbox.selftest, sandbox.wrap
-def substitute(clone):
-    clone.rename(clone.with_name('displaced'))
-    clone.mkdir()
-    (clone / 'tracked').write_text('substitute')
-def swap_before_preflight(**kwargs):
-    substitute(kwargs['clone'])
-    return preflight(**kwargs)
-def swap_after_wrap(cmd, **kwargs):
-    argv = wrap(cmd, **kwargs)
-    if cmd[0] == 'codex':
-        substitute(kwargs['clone'])
-    return argv
-if {phase!r} == 'preflight':
-    sandbox.selftest = swap_before_preflight
-else:
-    sandbox.wrap = swap_after_wrap
-'''
-                result = self.worker('raise AssertionError("worker started")', role='astra', sandboxed=True,
-                                     setup=setup, exit_code=78)
-                self.assertIn('changed', result.stderr)
-                self.assertFalse((self.product / 'USAGE.jsonl').exists())
-                area, = (self.home / 'work/demo').glob('review-*')
-                replacement = area / area.name
-                self.assertEqual((replacement / 'tracked').read_text(), 'substitute')
-                self.assertTrue((area / 'lease.json').is_file())
-                replacement.rename(self.base / f'replacement-{phase}')
-                (area / 'displaced').rename(replacement)
-                self.abandon_review(area)
-                with patch.object(run_codex, 'work_repo', return_value=area.parent / 'repo'):
-                    with run_codex.review_worktree('demo', self.owner, self.head):
-                        self.assertFalse(area.exists())
-                self.assertEqual(self.git('worktree', 'list', '--porcelain'), before)
-
     def test_review_refuses_a_symlink_in_the_requested_working_subdirectory(self):
         nested = self.owner / 'nested'
         target = self.owner / 'actual'
@@ -1881,81 +1517,6 @@ else:
         self.assertFalse((self.product / 'USAGE.jsonl').exists())
         self.assertFalse(list((self.home / 'work/demo').glob('review-*')))
         self.assertEqual(self.git('worktree', 'list', '--porcelain'), before)
-
-    def test_review_retirement_preserves_replacement_and_unexpected_contents(self):
-        root = self.home / 'work/demo'
-        move = run_codex.move_review_entry
-        moved = self.base / 'original-area'
-
-        def replace_before_move(source, target, name, destination):
-            if name == area.name and source != target and not moved.exists():
-                area.rename(moved)
-                area.mkdir()
-            return move(source, target, name, destination)
-
-        with patch.object(run_codex, 'work_repo', return_value=root / 'repo'):
-            with run_codex.review_worktree('demo', self.owner, self.head) as (checkout, *_):
-                area = checkout.parent
-                foreign = area / 'foreign'
-                foreign.write_text('unrecognized')
-            self.assertEqual(foreign.read_text(), 'unrecognized')
-            self.assertTrue(checkout.is_dir())
-            self.abandon_review(area)
-            foreign.unlink()
-            with patch.object(run_codex, 'move_review_entry', side_effect=replace_before_move):
-                with run_codex.review_worktree('demo', self.owner, self.head):
-                    self.assertEqual(list(area.iterdir()), [])
-                    self.assertTrue((moved / 'lease.json').is_file())
-            area.rmdir()
-            moved.rename(area)
-            with run_codex.review_worktree('demo', self.owner, self.head):
-                self.assertFalse(area.exists())
-
-    def test_review_recovers_retirement_interrupted_after_moving_the_lease(self):
-        setup = '''
-import os, signal
-rmdir = os.rmdir
-def kill_during_retirement(path, *, dir_fd=None):
-    if dir_fd is not None and os.readlink(f'/proc/self/fd/{dir_fd}').endswith('/.retired-reviews'):
-        os.kill(os.getpid(), signal.SIGKILL)
-    return rmdir(path, dir_fd=dir_fd)
-os.rmdir = kill_during_retirement
-'''
-        before = self.git('worktree', 'list', '--porcelain')
-        self.worker('', role='astra', sandboxed=True, setup=setup, exit_code=-signal.SIGKILL)
-        root = self.home / 'work/demo'
-        retirement = root / '.retired-reviews'
-        markers = list(retirement.glob('review-*.json'))
-        self.assertEqual(len(markers), 1, list(root.rglob('*')))
-        marker, = markers
-        lease = json.loads(marker.read_text())
-        area = retirement / lease['run_id']
-        self.assertEqual(list(area.iterdir()), [])
-        self.assertEqual(self.git('worktree', 'list', '--porcelain'), before)
-        with patch.object(run_codex, 'work_repo', return_value=root / 'repo'):
-            with run_codex.review_worktree('demo', self.owner, self.head):
-                self.assertEqual(list(retirement.iterdir()), [])
-
-    def test_post_launch_signal_during_retirement_is_recorded_in_usage(self):
-        setup = '''
-import os, signal
-rmdir = os.rmdir
-def signal_during_retirement(path, *, dir_fd=None):
-    if dir_fd is not None and str(path).startswith('review-'):
-        os.kill(os.getpid(), signal.SIGHUP)
-    return rmdir(path, dir_fd=dir_fd)
-os.rmdir = signal_during_retirement
-'''
-        code = 128 + signal.SIGHUP
-        event = json.dumps({'type': 'error', 'message': 'Usage limit reached'})
-        result = self.worker(f'print({event!r}); sys.exit(19)', '--sha', self.head, role='analyst', sandboxed=True,
-                             exit_code=code, setup=setup)
-        record = json.loads((self.product / 'USAGE.jsonl').read_text())
-        self.assertEqual(json.loads(result.stdout), record)
-        self.assertEqual((record['reviewed_sha'], record['exit'], record['worker_exit']), (self.head, code, 19))
-        self.assertNotIn('limit_hit', record)
-        self.assertIs(record['limit_diagnostic'], True)
-        self.assertFalse(list((self.home / 'work/demo').glob('review-*')))
 
     def test_publication_attests_bytes_in_both_launch_modes(self):
         for sandboxed in (True, False):
@@ -2034,16 +1595,6 @@ def launch_with_short_timeout(*_args, **_kwargs):
     sys.exit(run_codex.main())
 runpy.run_path = launch_with_short_timeout
 '''
-
-    def test_review_setup_times_out_waiting_for_admin_lock(self):
-        with run_codex.open_directory(self.owner / '.git') as fd:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            begin = time.monotonic()
-            result = self.worker('', role='astra', sandboxed=True, exit_code=78, setup=self.setup_budget)
-            self.assertLess(time.monotonic() - begin, 4)
-        self.assertIn('review Git deadline expired', result.stderr)
-        self.assertFalse(list((self.home / 'work/demo').glob('review-*')))
-        self.assertFalse(list((self.product / '.runs').glob('*.events.jsonl')))
 
     def test_review_setup_deadline_and_term_stop_stalled_git_before_launch(self):
         before = self.git('worktree', 'list', '--porcelain')
@@ -2523,11 +2074,12 @@ subprocess.Popen.communicate = change_backlink
         (task / 'tracked').write_text('changed')
         index = private / 'index'
         before = index.read_bytes()
-        self.git('config', 'extensions.refStorage', 'unknown')
+        config = str(common / 'config')
+        self.git('config', '--file', config, 'extensions.refStorage', 'unknown')
         with run_codex.sandbox.git_root(task) as fd:
             with self.assertRaisesRegex(run_codex.VerificationError, 'unsupported Git ref backend'):
                 run_codex.commit_changes(staging, task, '# Backend', 'test', checkout_fd=fd, expected_common=common)
-            self.git('config', '--unset', 'extensions.refStorage')
+            self.git('config', '--file', config, '--unset', 'extensions.refStorage', cwd=self.base)
             self.git('symbolic-ref', 'refs/heads/alias', 'refs/heads/main', cwd=task)
             self.git('symbolic-ref', 'HEAD', 'refs/heads/alias', cwd=task)
             refs = self.git('show-ref', '--head', cwd=task)
